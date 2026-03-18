@@ -1,0 +1,147 @@
+:root {
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --text: #111827;
+  --muted: #4b5563;
+  --border: #d1d5db;
+  --accent: #0f766e;
+  --error: #b91c1c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(180deg, #e2e8f0 0%, #f8fafc 50%, #eef2ff 100%);
+  color: var(--text);
+  font-family: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+}
+
+.page-wrap {
+  min-height: 100vh;
+  padding: 40px 16px;
+}
+
+.container {
+  max-width: 860px;
+  margin: 0 auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px;
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.08);
+}
+
+h1 {
+  margin: 0 0 10px;
+  font-size: 28px;
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+}
+
+h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.description {
+  margin: 0 0 24px;
+  color: var(--muted);
+}
+
+.upload-form {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.upload-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.upload-form span {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.upload-form input[type='file'] {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  background: #fff;
+}
+
+.upload-form button {
+  border: 0;
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.upload-form button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.error-message {
+  margin: 0 0 18px;
+  color: var(--error);
+  font-weight: 600;
+}
+
+.parsed-section {
+  margin-bottom: 24px;
+}
+
+.parsed-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  background: #f9fafb;
+}
+
+.card p {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.json-section pre {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #0b1020;
+  color: #d1fae5;
+  padding: 14px;
+  font-family: 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+@media (max-width: 720px) {
+  .container {
+    padding: 18px;
+  }
+
+  .parsed-grid {
+    grid-template-columns: 1fr;
+  }
+}
