@@ -629,6 +629,7 @@ function getOverlayAnchorId(docKey: OverlayDocKey, targetId: string): string {
 }
 
 export default function HomePage() {
+  const COLD_START_DIALOG_DELAY_MS = 1500;
   const [signPdf, setSignPdf] = useState<File | null>(null);
   const [powerOfAttorneyImage, setPowerOfAttorneyImage] = useState<File | null>(null);
   const [receiptImage, setReceiptImage] = useState<File | null>(null);
@@ -641,6 +642,9 @@ export default function HomePage() {
   const [activeTab, setActiveTab] = useState<DocumentTab>('signPdf');
   const [reviewCheckedMap, setReviewCheckedMap] = useState<Record<string, boolean>>({});
   const [reviewConfirmedMap, setReviewConfirmedMap] = useState<Record<string, boolean>>({});
+  const [isColdStartDialogOpen, setIsColdStartDialogOpen] = useState(false);
+  const [coldStartStartedAt, setColdStartStartedAt] = useState<number | null>(null);
+  const [coldStartElapsedSeconds, setColdStartElapsedSeconds] = useState(0);
   const [overlayImageDims, setOverlayImageDims] = useState<
     Partial<Record<OverlayDocKey, { width: number; height: number }>>
   >({});
@@ -663,6 +667,32 @@ export default function HomePage() {
     setReviewCheckedMap({});
     setReviewConfirmedMap({});
     setOverlayImageDims({});
+  };
+
+  const runWithColdStartDialog = async <T,>(task: () => Promise<T>): Promise<T> => {
+    let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+    const startedAt = Date.now();
+    const dialogTimer = setTimeout(() => {
+      setColdStartStartedAt(startedAt);
+      setIsColdStartDialogOpen(true);
+      elapsedTimer = setInterval(() => {
+        setColdStartElapsedSeconds(
+          Math.max(0, Math.floor((Date.now() - startedAt) / 1000)),
+        );
+      }, 250);
+    }, COLD_START_DIALOG_DELAY_MS);
+
+    try {
+      return await task();
+    } finally {
+      clearTimeout(dialogTimer);
+      if (elapsedTimer) {
+        clearInterval(elapsedTimer);
+      }
+      setIsColdStartDialogOpen(false);
+      setColdStartStartedAt(null);
+      setColdStartElapsedSeconds(0);
+    }
   };
 
   useEffect(() => {
@@ -1094,12 +1124,14 @@ export default function HomePage() {
         applyReceiptPreprocess ? 'true' : 'false',
       );
 
-      const response = await fetch(`${getApiBaseUrl()}/verification/upload`, {
-        method: 'POST',
-        body: formData,
+      const { response, data } = await runWithColdStartDialog(async () => {
+        const response = await fetch(`${getApiBaseUrl()}/verification/upload`, {
+          method: 'POST',
+          body: formData,
+        });
+        const data = await response.json();
+        return { response, data };
       });
-
-      const data = await response.json();
 
       if (!response.ok) {
         const maybeMessage = (data as { message?: string | string[] }).message;
@@ -1120,6 +1152,30 @@ export default function HomePage() {
   return (
     <div className="page-wrap">
       <main className="container">
+        {isColdStartDialogOpen && (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(15, 23, 42, 0.45)',
+              display: 'grid',
+              placeItems: 'center',
+              zIndex: 9999,
+              padding: '16px',
+            }}
+          >
+            <section className="card" style={{ width: '100%', maxWidth: '560px' }}>
+              <h2 style={{ marginTop: 0, marginBottom: '8px' }}>콜드스타트로 서버를 깨우는 중입니다</h2>
+              <p style={{ margin: '0 0 8px', color: '#374151' }}>
+                무료 플랜이라 첫 요청이 느릴 수 있어요. 준비되면 자동으로 닫힙니다.
+              </p>
+              <p style={{ margin: 0, color: '#111827', fontWeight: 700 }}>
+                대기 시간: {coldStartElapsedSeconds}초
+                {coldStartStartedAt ? '' : ' (연결 확인 중)'}
+              </p>
+            </section>
+          </div>
+        )}
         <h1>문서 파싱 테스트</h1>
         <div
           style={{
