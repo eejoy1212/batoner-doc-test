@@ -696,6 +696,28 @@ export default function HomePage() {
   };
 
   useEffect(() => {
+    let cancelled = false;
+    const runWarmup = async () => {
+      try {
+        await fetch(`${getApiBaseUrl()}/verification/warmup`, {
+          method: 'POST',
+          cache: 'no-store',
+        });
+      } catch {
+        // warmup 실패는 사용자 흐름을 막지 않는다.
+      }
+    };
+
+    if (!cancelled) {
+      void runWarmup();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!receiptImage) {
       setReceiptImagePreviewUrl(null);
       return;
