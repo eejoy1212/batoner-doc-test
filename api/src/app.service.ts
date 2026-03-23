@@ -7,6 +7,8 @@ export class AppService {
       success: true,
       message: 'API is running',
       port: 4000,
+      uptimeSeconds: Math.floor(process.uptime()),
+      serverNow: new Date().toISOString(),
     };
   }
 }

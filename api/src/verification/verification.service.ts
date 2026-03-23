@@ -569,10 +569,24 @@ export class VerificationService {
 
     if (customProcessorId) {
       if (file.mimetype === 'application/pdf') {
-        return this.ocrEngineService.recognizePdfDetailedWithProcessor(
+        const customResult = await this.ocrEngineService.recognizePdfDetailedWithProcessor(
           file.buffer,
           customProcessorId,
         );
+        if (!customResult.error) {
+          return customResult;
+        }
+
+        // Custom processor가 일시 오류(예: 13 INTERNAL)일 때 PDF 전용 fallback으로 한 번 더 시도한다.
+        const layoutFallback =
+          await this.ocrEngineService.recognizePdfWithLayoutParserDetailed(
+            file.buffer,
+          );
+        if (!layoutFallback.error) {
+          return layoutFallback;
+        }
+
+        return customResult;
       }
       return this.ocrEngineService.recognizeImageDetailedWithProcessor(
         file.buffer,
