@@ -30,6 +30,10 @@ export type OcrEntity = {
   type: string;
   mentionText: string;
   confidence: number | null;
+  left?: number;
+  top?: number;
+  right?: number;
+  bottom?: number;
 };
 
 @Injectable()
@@ -465,14 +469,28 @@ export class OcrEngineService {
   private extractEntitiesFromDocument(
     document: protos.google.cloud.documentai.v1.IDocument,
   ): OcrEntity[] {
+    const pages = document.pages ?? [];
     return (document.entities ?? [])
-      .map((entity) => ({
-        type: entity.type ?? '',
-        mentionText: (entity.mentionText ?? '').replace(/\s+/g, ' ').trim(),
-        confidence: Number.isFinite(Number(entity.confidence))
-          ? Number(entity.confidence)
-          : null,
-      }))
+      .map((entity) => {
+        const pageRef = entity.pageAnchor?.pageRefs?.[0];
+        const pageIndex = Number(pageRef?.page ?? 0);
+        const pageInfo = pages[pageIndex];
+        const pageWidth = Number(pageInfo?.dimension?.width ?? 0);
+        const pageHeight = Number(pageInfo?.dimension?.height ?? 0);
+        const box = this.getPixelBox(pageRef?.boundingPoly, pageWidth, pageHeight);
+
+        return {
+          type: entity.type ?? '',
+          mentionText: (entity.mentionText ?? '').replace(/\s+/g, ' ').trim(),
+          confidence: Number.isFinite(Number(entity.confidence))
+            ? Number(entity.confidence)
+            : null,
+          left: box?.left,
+          top: box?.top,
+          right: box?.right,
+          bottom: box?.bottom,
+        };
+      })
       .filter((entity) => entity.type.length > 0 || entity.mentionText.length > 0);
   }
 

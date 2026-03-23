@@ -38,6 +38,7 @@ type ReceiptOcrResult = {
   preprocessShear: number | null;
   preprocessCropApplied: boolean;
 };
+type DocumentKind = 'signPdf' | 'powerOfAttorneyImage' | 'receiptImage' | 'bidSheetImage';
 
 @Injectable()
 export class VerificationService {
@@ -53,7 +54,7 @@ export class VerificationService {
     bidSheetImage?: Express.Multer.File,
     applyReceiptPreprocess = false,
   ) {
-
+    // 문서별 OCR은 독립적으로 수행하고, 파싱은 이후 문서 타입별 전용 함수로 분기한다.
     const signPdfOcr = signPdf
       ? await this.extractSignPdfOcr(signPdf)
       : {
@@ -63,7 +64,7 @@ export class VerificationService {
           entities: [],
           error: null,
         };
-            console.log("signPdfOcr : ",signPdfOcr)
+
     const powerOfAttorneyOcr = powerOfAttorneyImage
       ? await this.extractImageOcr(powerOfAttorneyImage)
       : {
@@ -73,6 +74,9 @@ export class VerificationService {
           entities: [],
           error: null,
         };
+    if (powerOfAttorneyImage) {
+      console.log('위임장 ocr :', powerOfAttorneyOcr);
+    }
     const receiptOcrWithDebug = receiptImage
       ? await this.extractReceiptOcr(receiptImage, applyReceiptPreprocess)
       : {
@@ -100,36 +104,33 @@ export class VerificationService {
           error: null,
         };
     const settings = await this.verificationSettingsService.getSettings();
+    const primaryDocument = this.selectPrimaryDocumentKind({
+      signPdf: Boolean(signPdf),
+      powerOfAttorneyImage: Boolean(powerOfAttorneyImage),
+      receiptImage: Boolean(receiptImage),
+      bidSheetImage: Boolean(bidSheetImage),
+    });
+
     let parsed: ParsedResult;
     let receiptLowConfidenceWarning: ReceiptLowConfidenceWarning = {
       caseNumber: false,
       itemNumber: false,
     };
-    if (!signPdf && receiptImage) {
-      const receiptParsed = this.parseReceiptFields(
-        receiptOcr,
-        settings.reviewThreshold,
-      );
+
+    // 문서 종류별 전용 함수만 호출한다.
+    if (primaryDocument === 'receiptImage') {
+      const receiptParsed = this.parseReceiptFields(receiptOcr, settings.reviewThreshold);
       parsed = receiptParsed.parsed;
       receiptLowConfidenceWarning = receiptParsed.lowConfidenceWarning;
-    } else if (!signPdf && bidSheetImage && !receiptImage && !powerOfAttorneyImage) {
-      parsed = this.parseCaseItemOnlyFields(
-        bidSheetOcr,
-        settings.reviewThreshold,
-      );
-    } else if (!signPdf && powerOfAttorneyImage) {
-      parsed = this.parsePowerOfAttorneyFields(
-        powerOfAttorneyOcr,
-        settings.reviewThreshold,
-      );
+    } else if (primaryDocument === 'bidSheetImage') {
+      parsed = this.parseBidSheetFields(bidSheetOcr, settings.reviewThreshold);
+    } else if (primaryDocument === 'powerOfAttorneyImage') {
+      parsed = this.parsePowerOfAttorneyFields(powerOfAttorneyOcr, settings.reviewThreshold);
     } else {
-      parsed = this.parseTargetFields(
-        this.mergeOcrResults(signPdfOcr, powerOfAttorneyOcr, receiptOcr, bidSheetOcr),
-        settings,
-      );
+      parsed = this.parseSignPdfFields(signPdfOcr, settings);
     }
 
-    if (receiptImage) {
+    if (primaryDocument === 'receiptImage') {
       this.logReceiptConfidenceDebug(receiptOcr, parsed);
     }
 
@@ -180,7 +181,27 @@ export class VerificationService {
     };
   }
 
-  private parseCaseItemOnlyFields(
+  // 업로드된 파일 조합에서 파싱 기준이 될 문서 타입을 정한다.
+  private selectPrimaryDocumentKind(files: {
+    signPdf: boolean;
+    powerOfAttorneyImage: boolean;
+    receiptImage: boolean;
+    bidSheetImage: boolean;
+  }): DocumentKind {
+    if (files.signPdf) {
+      return 'signPdf';
+    }
+    if (files.powerOfAttorneyImage) {
+      return 'powerOfAttorneyImage';
+    }
+    if (files.receiptImage) {
+      return 'receiptImage';
+    }
+    return 'bidSheetImage';
+  }
+
+  // 기일입찰표 전용 파서: 사건번호/물건번호만 추출한다.
+  private parseBidSheetFields(
     ocr: OcrDetailedResult,
     reviewThreshold: number,
   ): ParsedResult {
@@ -223,6 +244,7 @@ export class VerificationService {
     };
   }
 
+  // 영수증 전용 파서: 사건번호/물건번호를 추출하고 저신뢰 경고를 계산한다.
   private parseReceiptFields(
     ocr: OcrDetailedResult,
     reviewThreshold: number,
@@ -483,6 +505,7 @@ export class VerificationService {
     return null;
   }
 
+  // 위임장 전용 파서: 입찰인 이름 + 사건번호를 추출한다.
   private parsePowerOfAttorneyFields(
     ocr: OcrDetailedResult,
     reviewThreshold: number,
@@ -522,32 +545,6 @@ export class VerificationService {
         needsReview: true,
       },
     };
-  }
-
-  private mergeOcrResults(...results: OcrDetailedResult[]): OcrDetailedResult {
-    const merged = results.reduce<OcrDetailedResult>(
-      (acc, curr) => {
-        if (curr.text) {
-          acc.text = acc.text ? `${acc.text}\n${curr.text}` : curr.text;
-        }
-        acc.lines.push(...curr.lines);
-        acc.formFields.push(...curr.formFields);
-        acc.entities.push(...curr.entities);
-        if (curr.error) {
-          acc.error = acc.error ? `${acc.error}; ${curr.error}` : curr.error;
-        }
-        return acc;
-      },
-      {
-        text: '',
-        lines: [],
-        formFields: [],
-        entities: [],
-        error: null,
-      },
-    );
-
-    return merged;
   }
 
   private async extractSignPdfOcr(file: Express.Multer.File): Promise<OcrDetailedResult> {
@@ -1068,12 +1065,13 @@ export class VerificationService {
     return Math.max(...list);
   }
 
-  private parseTargetFields(
+  // 전자본인서명확인서 전용 파서: 전본서 필드만 추출한다.
+  private parseSignPdfFields(
     ocr: OcrDetailedResult,
     settings: VerificationSettings,
   ): ParsedResult {
     const reviewThreshold = settings.reviewThreshold;
-console.log("전본서 ocr :",ocr)
+    console.log('전본서 ocr 값 :', ocr);
     const principalNameCandidate =
       this.findByEntityExactType(ocr.entities, 'principalName') ??
       this.findByLayoutLines(

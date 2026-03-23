@@ -224,6 +224,12 @@ h3 {
   margin-bottom: 24px;
 }
 
+.review-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 12px;
+}
+
 .parsed-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -263,6 +269,10 @@ h3 {
   }
 
   .parsed-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .review-layout {
     grid-template-columns: 1fr;
   }
 }
