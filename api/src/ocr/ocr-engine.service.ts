@@ -40,6 +40,10 @@ export type OcrEntity = {
 export class OcrEngineService {
   private readonly logger = new Logger(OcrEngineService.name);
   private readonly client: DocumentProcessorServiceClient;
+  private readonly retryAttempts = Math.max(
+    1,
+    Number(process.env.OCR_RETRY_ATTEMPTS ?? 2),
+  );
 
   constructor() {
     const location =
@@ -63,9 +67,13 @@ export class OcrEngineService {
     mimeType = 'image/png',
   ): Promise<OcrDetailedResult> {
     try {
-      return await this.processWithDocumentAi(buffer, mimeType, {
-        useLayoutParser: false,
-      });
+      return await this.processWithRetry(
+        () =>
+          this.processWithDocumentAi(buffer, mimeType, {
+            useLayoutParser: false,
+          }),
+        'Document AI OCR',
+      );
     } catch (error) {
       const details =
         typeof error === 'object' && error !== null && 'details' in error
@@ -92,9 +100,13 @@ export class OcrEngineService {
     buffer: Buffer,
   ): Promise<OcrDetailedResult> {
     try {
-      return await this.processWithDocumentAi(buffer, 'application/pdf', {
-        useLayoutParser: true,
-      });
+      return await this.processWithRetry(
+        () =>
+          this.processWithDocumentAi(buffer, 'application/pdf', {
+            useLayoutParser: true,
+          }),
+        'Document AI Layout Parser',
+      );
     } catch (error) {
       const details =
         typeof error === 'object' && error !== null && 'details' in error
@@ -122,10 +134,14 @@ export class OcrEngineService {
     processorId: string,
   ): Promise<OcrDetailedResult> {
     try {
-      return await this.processWithDocumentAi(buffer, 'application/pdf', {
-        useLayoutParser: false,
-        processorId,
-      });
+      return await this.processWithRetry(
+        () =>
+          this.processWithDocumentAi(buffer, 'application/pdf', {
+            useLayoutParser: false,
+            processorId,
+          }),
+        'Document AI Form Processor',
+      );
     } catch (error) {
       const details =
         typeof error === 'object' && error !== null && 'details' in error
@@ -154,10 +170,14 @@ export class OcrEngineService {
     processorId: string,
   ): Promise<OcrDetailedResult> {
     try {
-      return await this.processWithDocumentAi(buffer, mimeType, {
-        useLayoutParser: false,
-        processorId,
-      });
+      return await this.processWithRetry(
+        () =>
+          this.processWithDocumentAi(buffer, mimeType, {
+            useLayoutParser: false,
+            processorId,
+          }),
+        'Document AI Custom Processor',
+      );
     } catch (error) {
       const details =
         typeof error === 'object' && error !== null && 'details' in error
@@ -228,6 +248,36 @@ export class OcrEngineService {
       entities,
       error: null,
     };
+  }
+
+  private async processWithRetry<T>(
+    task: () => Promise<T>,
+    context: string,
+  ): Promise<T> {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= this.retryAttempts; attempt += 1) {
+      try {
+        return await task();
+      } catch (error) {
+        lastError = error;
+        if (attempt >= this.retryAttempts) {
+          break;
+        }
+
+        const waitMs = attempt * 700;
+        this.logger.warn(
+          `${context} attempt ${attempt} failed; retrying in ${waitMs}ms`,
+        );
+        await this.sleep(waitMs);
+      }
+    }
+
+    throw lastError;
+  }
+
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private getProcessorName(

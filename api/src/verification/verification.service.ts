@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import sharp from 'sharp';
 import {
   OcrDetailedResult,
@@ -110,6 +110,20 @@ export class VerificationService {
       receiptImage: Boolean(receiptImage),
       bidSheetImage: Boolean(bidSheetImage),
     });
+    const primaryOcrError =
+      primaryDocument === 'receiptImage'
+        ? receiptOcr.error
+        : primaryDocument === 'bidSheetImage'
+          ? bidSheetOcr.error
+          : primaryDocument === 'powerOfAttorneyImage'
+            ? powerOfAttorneyOcr.error
+            : signPdfOcr.error;
+
+    if (primaryOcrError) {
+      throw new ServiceUnavailableException(
+        `OCR temporarily unavailable for ${primaryDocument}: ${primaryOcrError}`,
+      );
+    }
 
     let parsed: ParsedResult;
     let receiptLowConfidenceWarning: ReceiptLowConfidenceWarning = {
