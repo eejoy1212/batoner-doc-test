@@ -1,0 +1,53 @@
+{
+  "reviewThreshold": 0.9,
+  "fields": {
+    "memberName": {
+      "entityKeywords": [
+        "name",
+        "성명",
+        "person"
+      ],
+      "formFieldLabels": [
+        "성명"
+      ],
+      "textFallbackLabel": "성명"
+    },
+    "usage": {
+      "entityKeywords": [
+        "usage",
+        "용도",
+        "purpose"
+      ],
+      "formFieldLabels": [
+        "용도"
+      ],
+      "textFallbackLabel": "용도"
+    },
+    "submitInstitution": {
+      "entityKeywords": [
+        "institution",
+        "제출기관",
+        "organization"
+      ],
+      "formFieldLabels": [
+        "전자본인서명확인서 제출기관",
+        "제출기관"
+      ],
+      "textFallbackLabel": "제출기관"
+    },
+    "delegatedPerson": {
+      "entityKeywords": [
+        "batoner",
+        "위임받은사람",
+        "수임인",
+        "대리인",
+        "agent"
+      ],
+      "formFieldLabels": [
+        "위임받은 사람",
+        "위임받은사람"
+      ],
+      "textFallbackLabel": "위임받은 사람"
+    }
+  }
+}

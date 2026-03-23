@@ -17,6 +17,7 @@ export type OcrDetailedResult = {
   lines: OcrLine[];
   formFields: OcrFormField[];
   entities: OcrEntity[];
+  error: string | null;
 };
 
 export type OcrFormField = {
@@ -37,7 +38,8 @@ export class OcrEngineService {
   private readonly client: DocumentProcessorServiceClient;
 
   constructor() {
-    const location = process.env.GCP_LOCATION || 'us';
+    const location =
+      process.env.GCP_LOCATION || process.env.GOOGLE_LOCATION || 'us';
     this.client = new DocumentProcessorServiceClient({
       apiEndpoint: `${location}-documentai.googleapis.com`,
     });
@@ -57,7 +59,9 @@ export class OcrEngineService {
     mimeType = 'image/png',
   ): Promise<OcrDetailedResult> {
     try {
-      return await this.processWithDocumentAi(buffer, mimeType);
+      return await this.processWithDocumentAi(buffer, mimeType, {
+        useLayoutParser: false,
+      });
     } catch (error) {
       const details =
         typeof error === 'object' && error !== null && 'details' in error
@@ -68,15 +72,122 @@ export class OcrEngineService {
           (error instanceof Error ? error.message : String(error)) +
           (details ? ` | details: ${details}` : ''),
       );
-      return { text: '', lines: [], formFields: [], entities: [] };
+      return {
+        text: '',
+        lines: [],
+        formFields: [],
+        entities: [],
+        error:
+          (error instanceof Error ? error.message : String(error)) ||
+          'Document AI OCR failed',
+      };
+    }
+  }
+
+  async recognizePdfWithLayoutParserDetailed(
+    buffer: Buffer,
+  ): Promise<OcrDetailedResult> {
+    try {
+      return await this.processWithDocumentAi(buffer, 'application/pdf', {
+        useLayoutParser: true,
+      });
+    } catch (error) {
+      const details =
+        typeof error === 'object' && error !== null && 'details' in error
+          ? String((error as { details?: unknown }).details ?? '')
+          : '';
+      this.logger.warn(
+        'Document AI Layout Parser failed: ' +
+          (error instanceof Error ? error.message : String(error)) +
+          (details ? ` | details: ${details}` : ''),
+      );
+      return {
+        text: '',
+        lines: [],
+        formFields: [],
+        entities: [],
+        error:
+          (error instanceof Error ? error.message : String(error)) ||
+          'Document AI Layout Parser failed',
+      };
+    }
+  }
+
+  async recognizePdfDetailedWithProcessor(
+    buffer: Buffer,
+    processorId: string,
+  ): Promise<OcrDetailedResult> {
+    try {
+      return await this.processWithDocumentAi(buffer, 'application/pdf', {
+        useLayoutParser: false,
+        processorId,
+      });
+    } catch (error) {
+      const details =
+        typeof error === 'object' && error !== null && 'details' in error
+          ? String((error as { details?: unknown }).details ?? '')
+          : '';
+      this.logger.warn(
+        'Document AI Form Processor failed: ' +
+          (error instanceof Error ? error.message : String(error)) +
+          (details ? ` | details: ${details}` : ''),
+      );
+      return {
+        text: '',
+        lines: [],
+        formFields: [],
+        entities: [],
+        error:
+          (error instanceof Error ? error.message : String(error)) ||
+          'Document AI Form Processor failed',
+      };
+    }
+  }
+
+  async recognizeImageDetailedWithProcessor(
+    buffer: Buffer,
+    mimeType: string,
+    processorId: string,
+  ): Promise<OcrDetailedResult> {
+    try {
+      return await this.processWithDocumentAi(buffer, mimeType, {
+        useLayoutParser: false,
+        processorId,
+      });
+    } catch (error) {
+      const details =
+        typeof error === 'object' && error !== null && 'details' in error
+          ? String((error as { details?: unknown }).details ?? '')
+          : '';
+      this.logger.warn(
+        'Document AI Custom Processor failed: ' +
+          (error instanceof Error ? error.message : String(error)) +
+          (details ? ` | details: ${details}` : ''),
+      );
+      return {
+        text: '',
+        lines: [],
+        formFields: [],
+        entities: [],
+        error:
+          (error instanceof Error ? error.message : String(error)) ||
+          'Document AI Custom Processor failed',
+      };
     }
   }
 
   private async processWithDocumentAi(
     buffer: Buffer,
     mimeType: string,
+    options: {
+      useLayoutParser: boolean;
+      processorId?: string;
+    },
   ): Promise<OcrDetailedResult> {
-    const processorName = this.getProcessorName();
+    const processorName = this.getProcessorName(
+      options.useLayoutParser,
+      options.processorId,
+    );
     const request: protos.google.cloud.documentai.v1.IProcessRequest = {
       name: processorName,
       rawDocument: {
@@ -84,42 +195,112 @@ export class OcrEngineService {
         content: buffer,
         mimeType,
       },
+      processOptions: options.useLayoutParser
+        ? {
+            layoutConfig: {
+              returnBoundingBoxes: true,
+            },
+          }
+        : undefined,
     };
 
     const [result] = await this.client.processDocument(request);
     const document = result.document;
+    this.logRawDocumentAiResult(processorName, document);
     if (!document) {
-      return { text: '', lines: [], formFields: [], entities: [] };
+      return { text: '', lines: [], formFields: [], entities: [], error: null };
     }
 
     const fullText = document.text ?? '';
+    const extractedText = this.extractTextFromDocument(document, fullText);
     const lines = this.extractLinesFromDocument(document, fullText);
     const formFields = this.extractFormFieldsFromDocument(document, fullText);
     const entities = this.extractEntitiesFromDocument(document);
 
     return {
-      text: fullText.trim(),
+      text: extractedText,
       lines,
       formFields,
       entities,
+      error: null,
     };
   }
 
-  private getProcessorName(): string {
+  private getProcessorName(
+    useLayoutParser: boolean,
+    explicitProcessorId?: string,
+  ): string {
     const projectId = process.env.GCP_PROJECT_ID || process.env.GOOGLE_PROJECT_ID;
     const location = process.env.GCP_LOCATION || process.env.GOOGLE_LOCATION || 'us';
-    const processorId = process.env.GCP_PROCESSOR_ID || process.env.GOOGLE_PROCESSOR_ID;
+    const layoutParserProcessorId =
+      process.env.GCP_LAYOUT_PARSER_PROCESSOR_ID ||
+      process.env.GOOGLE_LAYOUT_PARSER_PROCESSOR_ID;
+    const defaultProcessorId =
+      process.env.GCP_PROCESSOR_ID || process.env.GOOGLE_PROCESSOR_ID;
+    const processorId =
+      explicitProcessorId ||
+      (useLayoutParser
+        ? layoutParserProcessorId || defaultProcessorId
+        : defaultProcessorId || layoutParserProcessorId);
 
     if (!projectId || !processorId) {
       throw new Error(
-        'Missing GCP env vars. Set GCP_PROJECT_ID/GOOGLE_PROJECT_ID, GCP_LOCATION/GOOGLE_LOCATION, GCP_PROCESSOR_ID/GOOGLE_PROCESSOR_ID.',
+        'Missing GCP env vars. Set GCP_PROJECT_ID/GOOGLE_PROJECT_ID, GCP_LOCATION/GOOGLE_LOCATION, and processor id (GCP_LAYOUT_PARSER_PROCESSOR_ID/GOOGLE_LAYOUT_PARSER_PROCESSOR_ID or GCP_PROCESSOR_ID/GOOGLE_PROCESSOR_ID).',
       );
     }
 
     return `projects/${projectId}/locations/${location}/processors/${processorId}`;
   }
 
+  private logRawDocumentAiResult(
+    processorName: string,
+    document: protos.google.cloud.documentai.v1.IDocument | null | undefined,
+  ) {
+    console.log('[DocumentAI summary]', {
+      processorName,
+      hasDocument: Boolean(document),
+      textLength: (document?.text ?? '').length,
+      pages: document?.pages?.length ?? 0,
+      formFields: (document?.pages ?? []).reduce(
+        (acc, page) => acc + (page.formFields?.length ?? 0),
+        0,
+      ),
+      entities: document?.entities?.length ?? 0,
+      layoutBlocks: document?.documentLayout?.blocks?.length ?? 0,
+      chunks: document?.chunkedDocument?.chunks?.length ?? 0,
+    });
+
+    const shouldLogRaw =
+      String(process.env.OCR_LOG_RAW_DOCUMENT ?? '')
+        .trim()
+        .toLowerCase() === 'true';
+
+    // if (shouldLogRaw) {
+      console.log(
+        '[DocumentAI raw document]',
+        JSON.stringify(document ?? null, null, 2),
+      );
+    // }
+  }
+
   private extractLinesFromDocument(
+    document: protos.google.cloud.documentai.v1.IDocument,
+    fullText: string,
+  ): OcrLine[] {
+    const linesFromPages = this.extractLinesFromPages(document, fullText);
+    if (linesFromPages.length > 0) {
+      return linesFromPages;
+    }
+
+    const linesFromLayout = this.extractLinesFromLayoutBlocks(document);
+    if (linesFromLayout.length > 0) {
+      return linesFromLayout;
+    }
+
+    return this.extractLinesFromChunks(document);
+  }
+
+  private extractLinesFromPages(
     document: protos.google.cloud.documentai.v1.IDocument,
     fullText: string,
   ): OcrLine[] {
@@ -162,6 +343,94 @@ export class OcrEngineService {
     }
 
     return lines.sort((a, b) => (a.top === b.top ? a.left - b.left : a.top - b.top));
+  }
+
+  private extractLinesFromLayoutBlocks(
+    document: protos.google.cloud.documentai.v1.IDocument,
+  ): OcrLine[] {
+    const blocks = document.documentLayout?.blocks ?? [];
+    const pages = document.pages ?? [];
+    const lines: Array<OcrLine & { page: number }> = [];
+
+    this.collectLinesFromLayoutBlocks(blocks, pages, lines, 1);
+
+    return lines
+      .sort((a, b) => {
+        if (a.page !== b.page) {
+          return a.page - b.page;
+        }
+        if (a.top !== b.top) {
+          return a.top - b.top;
+        }
+        return a.left - b.left;
+      })
+      .map(({ page: _page, ...line }) => line);
+  }
+
+  private collectLinesFromLayoutBlocks(
+    blocks: protos.google.cloud.documentai.v1.Document.DocumentLayout.IDocumentLayoutBlock[],
+    pages: protos.google.cloud.documentai.v1.Document.IPage[],
+    output: Array<OcrLine & { page: number }>,
+    fallbackPage: number,
+  ) {
+    for (const block of blocks) {
+      const page = Number(block.pageSpan?.pageStart ?? fallbackPage);
+      const safePage = Number.isFinite(page) && page > 0 ? page : fallbackPage;
+      const text = (block.textBlock?.text ?? '').replace(/\s+/g, ' ').trim();
+
+      if (text) {
+        const pageInfo = pages[safePage - 1];
+        const pageWidth = Number(pageInfo?.dimension?.width ?? 0);
+        const pageHeight = Number(pageInfo?.dimension?.height ?? 0);
+        const box = this.getPixelBox(block.boundingBox, pageWidth, pageHeight);
+
+        if (box) {
+          output.push({
+            text,
+            left: box.left,
+            top: box.top,
+            width: box.width,
+            height: box.height,
+            right: box.right,
+            bottom: box.bottom,
+            centerY: (box.top + box.bottom) / 2,
+            page: safePage,
+          });
+        }
+      }
+
+      const children = block.textBlock?.blocks ?? [];
+      if (children.length > 0) {
+        this.collectLinesFromLayoutBlocks(children, pages, output, safePage);
+      }
+    }
+  }
+
+  private extractLinesFromChunks(
+    document: protos.google.cloud.documentai.v1.IDocument,
+  ): OcrLine[] {
+    const chunks = document.chunkedDocument?.chunks ?? [];
+    const lines: OcrLine[] = [];
+
+    for (let i = 0; i < chunks.length; i += 1) {
+      const content = (chunks[i].content ?? '').replace(/\s+/g, ' ').trim();
+      if (!content) {
+        continue;
+      }
+
+      lines.push({
+        text: content,
+        left: 0,
+        top: i,
+        width: 0,
+        height: 0,
+        right: 0,
+        bottom: i,
+        centerY: i,
+      });
+    }
+
+    return lines;
   }
 
   private extractFormFieldsFromDocument(
@@ -207,6 +476,32 @@ export class OcrEngineService {
       .filter((entity) => entity.type.length > 0 || entity.mentionText.length > 0);
   }
 
+  private extractTextFromDocument(
+    document: protos.google.cloud.documentai.v1.IDocument,
+    fullText: string,
+  ): string {
+    const direct = fullText.trim();
+    if (direct) {
+      return direct;
+    }
+
+    const blockTexts = (document.documentLayout?.blocks ?? [])
+      .map((block) => (block.textBlock?.text ?? '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    if (blockTexts.length > 0) {
+      return blockTexts.join('\n');
+    }
+
+    const chunkTexts = (document.chunkedDocument?.chunks ?? [])
+      .map((chunk) => (chunk.content ?? '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    if (chunkTexts.length > 0) {
+      return chunkTexts.join('\n');
+    }
+
+    return '';
+  }
+
   private getTextByLayout(
     fullText: string,
     layout?:
@@ -235,17 +530,19 @@ export class OcrEngineService {
   }
 
   private getPixelBox(
-    poly:
-      | protos.google.cloud.documentai.v1.Document.Page.ILayout['boundingPoly']
-      | null
-      | undefined,
+    poly: protos.google.cloud.documentai.v1.IBoundingPoly | null | undefined,
     pageWidth: number,
     pageHeight: number,
   ): { left: number; top: number; width: number; height: number; right: number; bottom: number } | null {
     const normalized = poly?.normalizedVertices ?? [];
-    if (normalized.length > 0 && pageWidth > 0 && pageHeight > 0) {
-      const xs = normalized.map((v) => (v.x ?? 0) * pageWidth);
-      const ys = normalized.map((v) => (v.y ?? 0) * pageHeight);
+    if (normalized.length > 0) {
+      const usePageDimensions = pageWidth > 0 && pageHeight > 0;
+      const xs = normalized.map((v) =>
+        usePageDimensions ? (v.x ?? 0) * pageWidth : Number(v.x ?? 0),
+      );
+      const ys = normalized.map((v) =>
+        usePageDimensions ? (v.y ?? 0) * pageHeight : Number(v.y ?? 0),
+      );
       return this.toBox(xs, ys);
     }
 

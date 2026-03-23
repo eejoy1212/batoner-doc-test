@@ -11,8 +11,10 @@ export type ParsedField = {
 };
 
 export type ParsedResult = {
-  memberName: ParsedField;
-  usage: ParsedField;
-  submitInstitution: ParsedField;
-  delegatedPerson: ParsedField;
+  principalName: ParsedField;
+  agentName: ParsedField;
+  submissionInstitution: ParsedField;
+  purposeCourtName: ParsedField;
+  caseNumber: ParsedField;
+  itemName: ParsedField;
 };

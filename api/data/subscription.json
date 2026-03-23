@@ -1,0 +1,9 @@
+{
+  "planCode": "pro-monthly",
+  "planName": "Pro Monthly",
+  "status": "active",
+  "seats": 5,
+  "nextBillingDate": "2026-04-01",
+  "autoRenew": true,
+  "cancelAtPeriodEnd": false
+}
