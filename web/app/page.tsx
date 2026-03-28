@@ -204,6 +204,103 @@ type OcrLineLike = {
   bottom: number;
 };
 
+type LoadingPhase = {
+  title: string;
+  description: string;
+  buttonLabel: string;
+};
+
+const PROCESSING_DIALOG_DELAY_MS = 1000;
+const MAX_UPLOAD_IMAGE_DIMENSION = 2200;
+const MAX_UPLOAD_IMAGE_FILE_SIZE_BYTES = 1_500_000;
+
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality?: number,
+): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), type, quality);
+  });
+}
+
+function replaceFileExtension(name: string, extension: string): string {
+  const base = name.replace(/\.[^.]+$/, '');
+  return `${base}${extension}`;
+}
+
+function getLoadingPhase(elapsedSeconds: number): LoadingPhase {
+  if (elapsedSeconds < 2) {
+    return {
+      title: '업로드 중입니다',
+      description: '선택한 파일을 서버로 보내고 있어요.',
+      buttonLabel: '업로드 중...',
+    };
+  }
+  if (elapsedSeconds < 8) {
+    return {
+      title: 'OCR 분석 중입니다',
+      description: '문서에서 텍스트와 항목을 읽고 있어요.',
+      buttonLabel: 'OCR 분석 중...',
+    };
+  }
+  return {
+    title: '결과 정리 중입니다',
+    description: '추출된 값을 정리하고 응답을 마무리하고 있어요.',
+    buttonLabel: '결과 정리 중...',
+  };
+}
+
+async function optimizeImageForUpload(file: File): Promise<File> {
+  if (!file.type.startsWith('image/') || typeof window === 'undefined') {
+    return file;
+  }
+
+  if (!('createImageBitmap' in window)) {
+    return file;
+  }
+
+  const bitmap = await createImageBitmap(file);
+  try {
+    const longestSide = Math.max(bitmap.width, bitmap.height);
+    const needsResize = longestSide > MAX_UPLOAD_IMAGE_DIMENSION;
+    const needsCompression = file.size > MAX_UPLOAD_IMAGE_FILE_SIZE_BYTES;
+    if (!needsResize && !needsCompression) {
+      return file;
+    }
+
+    const scale = Math.min(1, MAX_UPLOAD_IMAGE_DIMENSION / longestSide);
+    const targetWidth = Math.max(1, Math.round(bitmap.width * scale));
+    const targetHeight = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return file;
+    }
+
+    context.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
+
+    const optimizedBlob = await canvasToBlob(canvas, 'image/jpeg', 0.86);
+    if (!optimizedBlob || optimizedBlob.size >= file.size) {
+      return file;
+    }
+
+    return new File(
+      [optimizedBlob],
+      replaceFileExtension(file.name, '.jpg'),
+      {
+        type: 'image/jpeg',
+        lastModified: file.lastModified,
+      },
+    );
+  } finally {
+    bitmap.close();
+  }
+}
+
 function normalizeForMatch(value: string): string {
   return (value ?? '').replace(/[^가-힣A-Za-z0-9]/g, '').toLowerCase();
 }
@@ -629,7 +726,6 @@ function getOverlayAnchorId(docKey: OverlayDocKey, targetId: string): string {
 }
 
 export default function HomePage() {
-  const COLD_START_DIALOG_DELAY_MS = 1500;
   const [signPdf, setSignPdf] = useState<File | null>(null);
   const [powerOfAttorneyImage, setPowerOfAttorneyImage] = useState<File | null>(null);
   const [receiptImage, setReceiptImage] = useState<File | null>(null);
@@ -645,6 +741,9 @@ export default function HomePage() {
   const [isColdStartDialogOpen, setIsColdStartDialogOpen] = useState(false);
   const [coldStartStartedAt, setColdStartStartedAt] = useState<number | null>(null);
   const [coldStartElapsedSeconds, setColdStartElapsedSeconds] = useState(0);
+  const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>(() =>
+    getLoadingPhase(0),
+  );
   const [overlayImageDims, setOverlayImageDims] = useState<
     Partial<Record<OverlayDocKey, { width: number; height: number }>>
   >({});
@@ -675,12 +774,13 @@ export default function HomePage() {
     const dialogTimer = setTimeout(() => {
       setColdStartStartedAt(startedAt);
       setIsColdStartDialogOpen(true);
+      setLoadingPhase(getLoadingPhase(0));
       elapsedTimer = setInterval(() => {
-        setColdStartElapsedSeconds(
-          Math.max(0, Math.floor((Date.now() - startedAt) / 1000)),
-        );
+        const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+        setColdStartElapsedSeconds(elapsedSeconds);
+        setLoadingPhase(getLoadingPhase(elapsedSeconds));
       }, 250);
-    }, COLD_START_DIALOG_DELAY_MS);
+    }, PROCESSING_DIALOG_DELAY_MS);
 
     try {
       return await task();
@@ -692,6 +792,7 @@ export default function HomePage() {
       setIsColdStartDialogOpen(false);
       setColdStartStartedAt(null);
       setColdStartElapsedSeconds(0);
+      setLoadingPhase(getLoadingPhase(0));
     }
   };
 
@@ -1127,19 +1228,38 @@ export default function HomePage() {
 
     try {
       setLoading(true);
+      setLoadingPhase({
+        title: '업로드 준비 중입니다',
+        description: '이미지 크기를 확인하고 전송할 파일을 정리하고 있어요.',
+        buttonLabel: '업로드 준비 중...',
+      });
+
+      const [
+        optimizedSignPdf,
+        optimizedPowerOfAttorneyImage,
+        optimizedReceiptImage,
+        optimizedBidSheetImage,
+      ] = await Promise.all([
+        signPdf ? optimizeImageForUpload(signPdf) : Promise.resolve(null),
+        powerOfAttorneyImage
+          ? optimizeImageForUpload(powerOfAttorneyImage)
+          : Promise.resolve(null),
+        receiptImage ? optimizeImageForUpload(receiptImage) : Promise.resolve(null),
+        bidSheetImage ? optimizeImageForUpload(bidSheetImage) : Promise.resolve(null),
+      ]);
 
       const formData = new FormData();
-      if (signPdf) {
-        formData.append('signPdf', signPdf);
+      if (optimizedSignPdf) {
+        formData.append('signPdf', optimizedSignPdf);
       }
-      if (powerOfAttorneyImage) {
-        formData.append('powerOfAttorneyImage', powerOfAttorneyImage);
+      if (optimizedPowerOfAttorneyImage) {
+        formData.append('powerOfAttorneyImage', optimizedPowerOfAttorneyImage);
       }
-      if (receiptImage) {
-        formData.append('receiptImage', receiptImage);
+      if (optimizedReceiptImage) {
+        formData.append('receiptImage', optimizedReceiptImage);
       }
-      if (bidSheetImage) {
-        formData.append('bidSheetImage', bidSheetImage);
+      if (optimizedBidSheetImage) {
+        formData.append('bidSheetImage', optimizedBidSheetImage);
       }
       formData.append(
         'applyReceiptPreprocess',
@@ -1187,9 +1307,9 @@ export default function HomePage() {
             }}
           >
             <section className="card" style={{ width: '100%', maxWidth: '560px' }}>
-              <h2 style={{ marginTop: 0, marginBottom: '8px' }}>콜드스타트로 서버를 깨우는 중입니다</h2>
+              <h2 style={{ marginTop: 0, marginBottom: '8px' }}>{loadingPhase.title}</h2>
               <p style={{ margin: '0 0 8px', color: '#374151' }}>
-                무료 플랜이라 첫 요청이 느릴 수 있어요. 준비되면 자동으로 닫힙니다.
+                {loadingPhase.description}
               </p>
               <p style={{ margin: 0, color: '#111827', fontWeight: 700 }}>
                 대기 시간: {coldStartElapsedSeconds}초
@@ -1291,7 +1411,7 @@ export default function HomePage() {
           )}
 
           <button type="submit" disabled={loading}>
-            {loading ? '업로드 중...' : '업로드 실행'}
+            {loading ? loadingPhase.buttonLabel : '업로드 실행'}
           </button>
         </form>
 
