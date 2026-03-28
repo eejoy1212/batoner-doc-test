@@ -211,23 +211,6 @@ type LoadingPhase = {
 };
 
 const PROCESSING_DIALOG_DELAY_MS = 1000;
-const MAX_UPLOAD_IMAGE_DIMENSION = 2200;
-const MAX_UPLOAD_IMAGE_FILE_SIZE_BYTES = 1_500_000;
-
-function canvasToBlob(
-  canvas: HTMLCanvasElement,
-  type: string,
-  quality?: number,
-): Promise<Blob | null> {
-  return new Promise((resolve) => {
-    canvas.toBlob((blob) => resolve(blob), type, quality);
-  });
-}
-
-function replaceFileExtension(name: string, extension: string): string {
-  const base = name.replace(/\.[^.]+$/, '');
-  return `${base}${extension}`;
-}
 
 function getLoadingPhase(elapsedSeconds: number): LoadingPhase {
   if (elapsedSeconds < 2) {
@@ -308,56 +291,6 @@ function getFilesForActiveTab(params: {
     receiptImage,
     bidSheetImage,
   };
-}
-
-async function optimizeImageForUpload(file: File): Promise<File> {
-  if (!file.type.startsWith('image/') || typeof window === 'undefined') {
-    return file;
-  }
-
-  if (!('createImageBitmap' in window)) {
-    return file;
-  }
-
-  const bitmap = await createImageBitmap(file);
-  try {
-    const longestSide = Math.max(bitmap.width, bitmap.height);
-    const needsResize = longestSide > MAX_UPLOAD_IMAGE_DIMENSION;
-    const needsCompression = file.size > MAX_UPLOAD_IMAGE_FILE_SIZE_BYTES;
-    if (!needsResize && !needsCompression) {
-      return file;
-    }
-
-    const scale = Math.min(1, MAX_UPLOAD_IMAGE_DIMENSION / longestSide);
-    const targetWidth = Math.max(1, Math.round(bitmap.width * scale));
-    const targetHeight = Math.max(1, Math.round(bitmap.height * scale));
-    const canvas = document.createElement('canvas');
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-
-    const context = canvas.getContext('2d');
-    if (!context) {
-      return file;
-    }
-
-    context.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
-
-    const optimizedBlob = await canvasToBlob(canvas, 'image/jpeg', 0.86);
-    if (!optimizedBlob || optimizedBlob.size >= file.size) {
-      return file;
-    }
-
-    return new File(
-      [optimizedBlob],
-      replaceFileExtension(file.name, '.jpg'),
-      {
-        type: 'image/jpeg',
-        lastModified: file.lastModified,
-      },
-    );
-  } finally {
-    bitmap.close();
-  }
 }
 
 function normalizeForMatch(value: string): string {
@@ -1302,42 +1235,22 @@ export default function HomePage() {
       setLoading(true);
       setLoadingPhase({
         title: '업로드 준비 중입니다',
-        description: '이미지 크기를 확인하고 전송할 파일을 정리하고 있어요.',
+        description: '전송할 파일을 정리하고 있어요.',
         buttonLabel: '업로드 준비 중...',
       });
 
-      const [
-        optimizedSignPdf,
-        optimizedPowerOfAttorneyImage,
-        optimizedReceiptImage,
-        optimizedBidSheetImage,
-      ] = await Promise.all([
-        filesForUpload.signPdf
-          ? optimizeImageForUpload(filesForUpload.signPdf)
-          : Promise.resolve(null),
-        filesForUpload.powerOfAttorneyImage
-          ? optimizeImageForUpload(filesForUpload.powerOfAttorneyImage)
-          : Promise.resolve(null),
-        filesForUpload.receiptImage
-          ? optimizeImageForUpload(filesForUpload.receiptImage)
-          : Promise.resolve(null),
-        filesForUpload.bidSheetImage
-          ? optimizeImageForUpload(filesForUpload.bidSheetImage)
-          : Promise.resolve(null),
-      ]);
-
       const formData = new FormData();
-      if (optimizedSignPdf) {
-        formData.append('signPdf', optimizedSignPdf);
+      if (filesForUpload.signPdf) {
+        formData.append('signPdf', filesForUpload.signPdf);
       }
-      if (optimizedPowerOfAttorneyImage) {
-        formData.append('powerOfAttorneyImage', optimizedPowerOfAttorneyImage);
+      if (filesForUpload.powerOfAttorneyImage) {
+        formData.append('powerOfAttorneyImage', filesForUpload.powerOfAttorneyImage);
       }
-      if (optimizedReceiptImage) {
-        formData.append('receiptImage', optimizedReceiptImage);
+      if (filesForUpload.receiptImage) {
+        formData.append('receiptImage', filesForUpload.receiptImage);
       }
-      if (optimizedBidSheetImage) {
-        formData.append('bidSheetImage', optimizedBidSheetImage);
+      if (filesForUpload.bidSheetImage) {
+        formData.append('bidSheetImage', filesForUpload.bidSheetImage);
       }
       formData.append(
         'applyReceiptPreprocess',
