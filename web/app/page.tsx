@@ -251,6 +251,65 @@ function getLoadingPhase(elapsedSeconds: number): LoadingPhase {
   };
 }
 
+function getFilesForActiveTab(params: {
+  activeTab: DocumentTab;
+  signPdf: File | null;
+  powerOfAttorneyImage: File | null;
+  receiptImage: File | null;
+  bidSheetImage: File | null;
+}): {
+  signPdf: File | null;
+  powerOfAttorneyImage: File | null;
+  receiptImage: File | null;
+  bidSheetImage: File | null;
+} {
+  const { activeTab, signPdf, powerOfAttorneyImage, receiptImage, bidSheetImage } =
+    params;
+
+  if (activeTab === 'signPdf') {
+    return {
+      signPdf,
+      powerOfAttorneyImage: null,
+      receiptImage: null,
+      bidSheetImage: null,
+    };
+  }
+
+  if (activeTab === 'powerOfAttorneyImage') {
+    return {
+      signPdf: null,
+      powerOfAttorneyImage,
+      receiptImage: null,
+      bidSheetImage: null,
+    };
+  }
+
+  if (activeTab === 'receiptImage') {
+    return {
+      signPdf: null,
+      powerOfAttorneyImage: null,
+      receiptImage,
+      bidSheetImage: null,
+    };
+  }
+
+  if (activeTab === 'bidSheetImage') {
+    return {
+      signPdf: null,
+      powerOfAttorneyImage: null,
+      receiptImage: null,
+      bidSheetImage,
+    };
+  }
+
+  return {
+    signPdf,
+    powerOfAttorneyImage,
+    receiptImage,
+    bidSheetImage,
+  };
+}
+
 async function optimizeImageForUpload(file: File): Promise<File> {
   if (!file.type.startsWith('image/') || typeof window === 'undefined') {
     return file;
@@ -1219,7 +1278,20 @@ export default function HomePage() {
     setErrorMessage(null);
     setResult(null);
 
-    if (!signPdf && !powerOfAttorneyImage && !receiptImage && !bidSheetImage) {
+    const filesForUpload = getFilesForActiveTab({
+      activeTab,
+      signPdf,
+      powerOfAttorneyImage,
+      receiptImage,
+      bidSheetImage,
+    });
+
+    if (
+      !filesForUpload.signPdf &&
+      !filesForUpload.powerOfAttorneyImage &&
+      !filesForUpload.receiptImage &&
+      !filesForUpload.bidSheetImage
+    ) {
       setErrorMessage(
         'signPdf 또는 powerOfAttorneyImage 또는 receiptImage 또는 bidSheetImage 파일을 선택해주세요.',
       );
@@ -1240,12 +1312,18 @@ export default function HomePage() {
         optimizedReceiptImage,
         optimizedBidSheetImage,
       ] = await Promise.all([
-        signPdf ? optimizeImageForUpload(signPdf) : Promise.resolve(null),
-        powerOfAttorneyImage
-          ? optimizeImageForUpload(powerOfAttorneyImage)
+        filesForUpload.signPdf
+          ? optimizeImageForUpload(filesForUpload.signPdf)
           : Promise.resolve(null),
-        receiptImage ? optimizeImageForUpload(receiptImage) : Promise.resolve(null),
-        bidSheetImage ? optimizeImageForUpload(bidSheetImage) : Promise.resolve(null),
+        filesForUpload.powerOfAttorneyImage
+          ? optimizeImageForUpload(filesForUpload.powerOfAttorneyImage)
+          : Promise.resolve(null),
+        filesForUpload.receiptImage
+          ? optimizeImageForUpload(filesForUpload.receiptImage)
+          : Promise.resolve(null),
+        filesForUpload.bidSheetImage
+          ? optimizeImageForUpload(filesForUpload.bidSheetImage)
+          : Promise.resolve(null),
       ]);
 
       const formData = new FormData();
