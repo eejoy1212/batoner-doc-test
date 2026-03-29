@@ -1,7 +1,9 @@
 'use client';
 
+import Link from 'next/link';
 import { ChangeEvent, FormEvent, useEffect, useState } from 'react';
 import { getApiBaseUrl } from '@/lib/api';
+import { useRouter } from 'next/navigation';
 
 type UploadResponse = {
   success: boolean;
@@ -733,6 +735,7 @@ export default function HomePage() {
   const [isColdStartDialogOpen, setIsColdStartDialogOpen] = useState(false);
   const [coldStartStartedAt, setColdStartStartedAt] = useState<number | null>(null);
   const [coldStartElapsedSeconds, setColdStartElapsedSeconds] = useState(0);
+  const router = useRouter();
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>(() =>
     getLoadingPhase(0),
   );
@@ -1285,6 +1288,7 @@ export default function HomePage() {
   return (
     <div className="page-wrap">
       <main className="container">
+  
         {isColdStartDialogOpen && (
           <div
             style={{
@@ -1309,7 +1313,7 @@ export default function HomePage() {
             </section>
           </div>
         )}
-        <h1>문서 파싱 테스트</h1>
+        <h1>문서 파싱 테스트 하러 가기</h1>
         <div
           style={{
             display: 'flex',
@@ -1320,24 +1324,23 @@ export default function HomePage() {
         >
           {([
             // { key: 'all', label: '전체' },
-            { key: 'signPdf', label: '전자본인서명확인서' },
-            { key: 'powerOfAttorneyImage', label: '위임장' },
-            { key: 'receiptImage', label: '영수증' },
-            { key: 'bidSheetImage', label: '기일입찰표' },
-          ] as Array<{ key: DocumentTab; label: string }>).map((tab) => (
+            { key: 'signPdf', label: '전자본인서명확인서',url:"/ocr/1" },
+            { key: 'powerOfAttorneyImage', label: '위임장' ,url:"/ocr/2"},
+            { key: 'receiptImage', label: '영수증' ,url:"/ocr/3"},
+            { key: 'bidSheetImage', label: '기일입찰표',url:"/ocr/4" },
+          ] as Array<{ key: DocumentTab; label: string; url: string }>).map((tab) => (
             <button
               key={tab.key}
               type="button"
               onClick={() => {
-                setActiveTab(tab.key);
-                resetTabValues();
+              router.push(tab.url);
               }}
               style={{
                 border: '1px solid #d1d5db',
                 borderRadius: '10px',
                 padding: '8px 12px',
-                background: activeTab === tab.key ? '#111827' : '#ffffff',
-                color: activeTab === tab.key ? '#ffffff' : '#111827',
+                background: '#111827',
+                color:  '#ffffff' ,
                 fontWeight: 700,
                 cursor: 'pointer',
               }}
@@ -1347,67 +1350,7 @@ export default function HomePage() {
           ))}
         </div>
 
-        <form className="upload-form" onSubmit={handleSubmit}>
-          {(activeTab === 'all' || activeTab === 'powerOfAttorneyImage') && (
-            <label>
-              <span>powerOfAttorneyImage (위임장 이미지, 선택)</span>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={handlePowerOfAttorneyImageChange}
-              />
-            </label>
-          )}
-          {(activeTab === 'all' || activeTab === 'receiptImage') && (
-            <label>
-              <span>receiptImage (영수증 이미지, 선택)</span>
-              {/* <div
-                style={{
-                  display: 'flex',
-                  gap: '8px',
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                }}
-              > */}
-                <input type="file" accept="image/*" onChange={handleReceiptImageChange} />
-                {/* <button
-                  type="button"
-                  onClick={() => setApplyReceiptPreprocess((prev) => !prev)}
-                  style={{
-                    border: '1px solid #d1d5db',
-                    borderRadius: '10px',
-                    padding: '8px 12px',
-                    background: applyReceiptPreprocess ? '#0f766e' : '#ffffff',
-                    color: applyReceiptPreprocess ? '#ffffff' : '#111827',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                  }}
-                >
-                  이미지 보정해서 올리기 {applyReceiptPreprocess ? 'ON' : 'OFF'}
-                </button> */}
-              {/* </div> */}
-            </label>
-          )}
-          {(activeTab === 'all' || activeTab === 'signPdf') && (
-            <label>
-              <span>signPdf (전자본인서명확인서 파일, 선택)</span>
-              <input type="file" onChange={handleFileChange} />
-            </label>
-          )}
-          {(activeTab === 'all' || activeTab === 'bidSheetImage') && (
-            <label>
-              <span>bidSheetImage (기일입찰표 이미지, 선택)</span>
-              <input type="file" accept="image/*" onChange={handleBidSheetImageChange} />
-            </label>
-          )}
-
-          <button type="submit" disabled={loading}>
-            {loading ? loadingPhase.buttonLabel : '업로드 실행'}
-          </button>
-        </form>
-
-        {errorMessage && <p className="error-message">에러: {errorMessage}</p>}
-
+    
         {result && (
           <>
             {(result.lowConfidenceWarning.receiptCaseNumber ||

@@ -220,6 +220,243 @@ h3 {
   font-weight: 600;
 }
 
+.speed-test-shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: grid;
+  gap: 22px;
+}
+
+.speed-test-hero {
+  background:
+    radial-gradient(circle at top right, rgba(15, 118, 110, 0.16), transparent 28%),
+    linear-gradient(135deg, #ffffff 0%, #f0fdfa 55%, #ecfeff 100%);
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 24px;
+  padding: 28px;
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
+}
+
+.speed-test-kicker {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.speed-test-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.speed-test-meta div,
+.speed-test-summary div,
+.speed-test-field-card {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+  padding: 14px 16px;
+}
+
+.speed-test-meta span,
+.speed-test-summary span,
+.speed-test-field-card span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.speed-test-panel,
+.speed-test-card {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 24px;
+  padding: 24px;
+  box-shadow: 0 18px 34px rgba(15, 23, 42, 0.06);
+}
+
+.speed-test-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.speed-test-mode-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.speed-test-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  width: fit-content;
+  cursor: pointer;
+  user-select: none;
+}
+
+.speed-test-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.speed-test-toggle-track {
+  position: relative;
+  width: 52px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.5);
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.speed-test-toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+  transition: transform 0.2s ease;
+}
+
+.speed-test-toggle-text {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.speed-test-toggle input:checked + .speed-test-toggle-track {
+  background: #0f766e;
+  border-color: #0f766e;
+}
+
+.speed-test-toggle input:checked + .speed-test-toggle-track .speed-test-toggle-thumb {
+  transform: translateX(22px);
+}
+
+.speed-test-toggle input:disabled + .speed-test-toggle-track {
+  opacity: 0.65;
+}
+
+.upload-form .speed-test-mode {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 10px 14px;
+  background: #ffffff;
+  color: var(--text);
+}
+
+.upload-form .speed-test-mode.active {
+  background: #0f766e;
+  color: #ffffff;
+  border-color: #0f766e;
+}
+
+.speed-test-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.speed-test-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.speed-test-field-card strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 16px;
+}
+
+.speed-test-field-card small {
+  display: block;
+  color: var(--muted);
+}
+
+.speed-test-file-meta p {
+  margin: 0 0 8px;
+}
+
+.speed-test-preview-wrap {
+  margin-top: 16px;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #f8fafc;
+}
+
+.speed-test-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.speed-test-overlay-wrap {
+  position: relative;
+}
+
+.speed-test-overlay-box {
+  position: absolute;
+  border: 2px solid #dc2626;
+  border-radius: 4px;
+  box-sizing: border-box;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.65) inset;
+}
+
+.speed-test-overlay-label {
+  position: absolute;
+  left: -1px;
+  top: -24px;
+  display: inline-block;
+  background: #dc2626;
+  color: #ffffff;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.speed-test-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow: auto;
+  border-radius: 16px;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+@media (max-width: 900px) {
+  .speed-test-meta,
+  .speed-test-summary,
+  .speed-test-grid,
+  .speed-test-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
 .parsed-section {
   margin-bottom: 24px;
 }
