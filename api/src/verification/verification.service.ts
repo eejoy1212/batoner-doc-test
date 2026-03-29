@@ -1,4 +1,8 @@
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import sharp from 'sharp';
 import {
   OcrDetailedResult,
@@ -30,6 +34,47 @@ type ReceiptLowConfidenceWarning = {
   caseNumber: boolean;
   itemNumber: boolean;
 };
+type SignPdfSpeedTestInput = {
+  buffer: Buffer;
+  mimeType: string;
+  optimization: {
+    applied: boolean;
+    strategy: string;
+    sourceMimeType: string;
+    outputMimeType: string;
+    originalBytes: number;
+    optimizedBytes: number;
+  };
+};
+type SignPdfPreviewPayload = {
+  imageBase64: string | null;
+  mimeType: string | null;
+  width: number;
+  height: number;
+};
+type SignPdfSpeedTestMode =
+  | 'custom'
+  | 'layout'
+  | 'aggressive'
+  | 'aggressive_plus'
+  | 'crop_top'
+  | 'crop_top_plus'
+  | 'fast_first';
+type ReceiptSpeedTestMode =
+  | 'custom'
+  | 'generic_receipt'
+  | 'aggressive'
+  | 'aggressive_plus'
+  | 'crop_table'
+  | 'preprocess'
+  | 'fast_first';
+type BidSheetSpeedTestMode =
+  | 'custom'
+  | 'generic_bid_sheet'
+  | 'aggressive'
+  | 'aggressive_plus'
+  | 'crop_table'
+  | 'fast_first';
 type ReceiptOcrResult = {
   result: OcrDetailedResult;
   preprocessedImageBase64: string | null;
@@ -38,14 +83,159 @@ type ReceiptOcrResult = {
   preprocessShear: number | null;
   preprocessCropApplied: boolean;
 };
-type DocumentKind = 'signPdf' | 'powerOfAttorneyImage' | 'receiptImage' | 'bidSheetImage';
+type ReceiptSpeedTestOcrPayload = {
+  result: OcrDetailedResult;
+  previewBuffer: Buffer;
+  previewMimeType: string;
+  preprocessApplied: boolean;
+  preprocessAngle: number | null;
+  preprocessShear: number | null;
+  preprocessCropApplied: boolean;
+  selectedCandidate: string;
+};
+type DocumentProcessingResult = {
+  file: UploadedFileMetadata | null;
+  ocr: OcrDetailedResult;
+  parsed: ParsedResult | null;
+  receiptDebug: ReceiptOcrResult | null;
+  receiptLowConfidenceWarning: ReceiptLowConfidenceWarning;
+};
+type DocumentKind =
+  | 'signPdf'
+  | 'powerOfAttorneyImage'
+  | 'receiptImage'
+  | 'bidSheetImage';
 
 @Injectable()
 export class VerificationService {
+  private readonly logger = new Logger(VerificationService.name);
+  private lastSignPdfWarmupAt: number | null = null;
+  private lastReceiptWarmupAt: number | null = null;
+  private readonly signPdfWarmupTtlMs = Math.max(
+    60_000,
+    Number(process.env.SIGNPDF_WARMUP_TTL_MS ?? 10 * 60_000),
+  );
+  private readonly receiptWarmupTtlMs = Math.max(
+    60_000,
+    Number(process.env.RECEIPT_WARMUP_TTL_MS ?? 10 * 60_000),
+  );
+
   constructor(
     private readonly ocrEngineService: OcrEngineService,
     private readonly verificationSettingsService: VerificationSettingsService,
   ) {}
+
+  async warmupSignPdfCustomProcessor() {
+    const customProcessorId =
+      process.env.GOOGLE_CUSTOM_PROCESSOR_ID ||
+      process.env.GCP_CUSTOM_PROCESSOR_ID ||
+      '';
+    if (!customProcessorId) {
+      return {
+        success: false,
+        warmed: false,
+        skipped: true,
+        reason: 'missing_custom_processor_id',
+      };
+    }
+
+    const now = Date.now();
+    if (
+      this.lastSignPdfWarmupAt &&
+      now - this.lastSignPdfWarmupAt < this.signPdfWarmupTtlMs
+    ) {
+      return {
+        success: true,
+        warmed: false,
+        skipped: true,
+        reason: 'warmup_recently_done',
+      };
+    }
+
+    const png1x1 = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZUQZ8AAAAASUVORK5CYII=',
+      'base64',
+    );
+    const result =
+      await this.ocrEngineService.recognizeImageDetailedWithProcessor(
+        png1x1,
+        'image/png',
+        customProcessorId,
+      );
+    if (result.error) {
+      this.logger.warn(`signPdf warmup failed: ${result.error}`);
+      return {
+        success: false,
+        warmed: false,
+        skipped: false,
+        reason: 'warmup_failed',
+        error: result.error,
+      };
+    }
+
+    this.lastSignPdfWarmupAt = Date.now();
+    return {
+      success: true,
+      warmed: true,
+      skipped: false,
+    };
+  }
+
+  async warmupReceiptFormProcessor() {
+    const formProcessorId =
+      process.env.GOOGLE_FORM_PROCESSOR_ID ||
+      process.env.GCP_FORM_PROCESSOR_ID ||
+      '';
+    if (!formProcessorId) {
+      return {
+        success: false,
+        warmed: false,
+        skipped: true,
+        reason: 'missing_form_processor_id',
+      };
+    }
+
+    const now = Date.now();
+    if (
+      this.lastReceiptWarmupAt &&
+      now - this.lastReceiptWarmupAt < this.receiptWarmupTtlMs
+    ) {
+      return {
+        success: true,
+        warmed: false,
+        skipped: true,
+        reason: 'warmup_recently_done',
+      };
+    }
+
+    const png1x1 = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAAZUQZ8AAAAASUVORK5CYII=',
+      'base64',
+    );
+    const result =
+      await this.ocrEngineService.recognizeImageDetailedWithProcessor(
+        png1x1,
+        'image/png',
+        formProcessorId,
+      );
+    if (result.error) {
+      this.logger.warn(`receipt warmup failed: ${result.error}`);
+      return {
+        success: false,
+        warmed: false,
+        skipped: false,
+        reason: 'warmup_failed',
+        error: result.error,
+      };
+    }
+
+    this.lastReceiptWarmupAt = Date.now();
+    return {
+      success: true,
+      warmed: true,
+      skipped: false,
+    };
+  }
 
   async processUpload(
     signPdf?: Express.Multer.File,
@@ -54,144 +244,806 @@ export class VerificationService {
     bidSheetImage?: Express.Multer.File,
     applyReceiptPreprocess = false,
   ) {
-    // 문서별 OCR은 독립적으로 수행하고, 파싱은 이후 문서 타입별 전용 함수로 분기한다.
-    const signPdfOcr = signPdf
-      ? await this.extractSignPdfOcr(signPdf)
-      : {
-          text: '',
-          lines: [],
-          formFields: [],
-          entities: [],
-          error: null,
-        };
-
-    const powerOfAttorneyOcr = powerOfAttorneyImage
-      ? await this.extractImageOcr(powerOfAttorneyImage)
-      : {
-          text: '',
-          lines: [],
-          formFields: [],
-          entities: [],
-          error: null,
-        };
-    if (powerOfAttorneyImage) {
-      console.log('위임장 ocr :', powerOfAttorneyOcr);
-    }
-    const receiptOcrWithDebug = receiptImage
-      ? await this.extractReceiptOcr(receiptImage, applyReceiptPreprocess)
-      : {
-          result: {
-            text: '',
-            lines: [],
-            formFields: [],
-            entities: [],
-            error: null,
-          },
-          preprocessedImageBase64: null,
-          preprocessedImageMimeType: null,
-          preprocessAngle: null,
-          preprocessShear: null,
-          preprocessCropApplied: false,
-        };
-    const receiptOcr = receiptOcrWithDebug.result;
-    const bidSheetOcr = bidSheetImage
-      ? await this.extractImageOcr(bidSheetImage)
-      : {
-          text: '',
-          lines: [],
-          formFields: [],
-          entities: [],
-          error: null,
-        };
+    const startedAt = Date.now();
     const settings = await this.verificationSettingsService.getSettings();
+
+    const [
+      signPdfResult,
+      powerOfAttorneyResult,
+      receiptResult,
+      bidSheetResult,
+    ] = await Promise.all([
+      signPdf
+        ? this.processSignPdfUpload(signPdf, settings)
+        : Promise.resolve(this.createEmptyDocumentProcessingResult()),
+      powerOfAttorneyImage
+        ? this.processPowerOfAttorneyImageUpload(
+            powerOfAttorneyImage,
+            settings.reviewThreshold,
+          )
+        : Promise.resolve(this.createEmptyDocumentProcessingResult()),
+      receiptImage
+        ? this.processReceiptImageUpload(
+            receiptImage,
+            applyReceiptPreprocess,
+            settings.reviewThreshold,
+          )
+        : Promise.resolve(this.createEmptyDocumentProcessingResult()),
+      bidSheetImage
+        ? this.processBidSheetImageUpload(bidSheetImage, settings.reviewThreshold)
+        : Promise.resolve(this.createEmptyDocumentProcessingResult()),
+    ]);
+    this.logger.log(
+      `processUpload OCR stage completed in ${Date.now() - startedAt}ms`,
+    );
+
     const primaryDocument = this.selectPrimaryDocumentKind({
       signPdf: Boolean(signPdf),
       powerOfAttorneyImage: Boolean(powerOfAttorneyImage),
       receiptImage: Boolean(receiptImage),
       bidSheetImage: Boolean(bidSheetImage),
     });
-    const primaryOcrError =
-      primaryDocument === 'receiptImage'
-        ? receiptOcr.error
-        : primaryDocument === 'bidSheetImage'
-          ? bidSheetOcr.error
-          : primaryDocument === 'powerOfAttorneyImage'
-            ? powerOfAttorneyOcr.error
-            : signPdfOcr.error;
+
+    const resultsByKind: Record<DocumentKind, DocumentProcessingResult> = {
+      signPdf: signPdfResult,
+      powerOfAttorneyImage: powerOfAttorneyResult,
+      receiptImage: receiptResult,
+      bidSheetImage: bidSheetResult,
+    };
+    const primaryResult = resultsByKind[primaryDocument];
+    const primaryOcrError = primaryResult.ocr.error;
 
     if (primaryOcrError) {
       throw new ServiceUnavailableException(
         `OCR temporarily unavailable for ${primaryDocument}: ${primaryOcrError}`,
       );
     }
-
-    let parsed: ParsedResult;
-    let receiptLowConfidenceWarning: ReceiptLowConfidenceWarning = {
-      caseNumber: false,
-      itemNumber: false,
-    };
-
-    // 문서 종류별 전용 함수만 호출한다.
-    if (primaryDocument === 'receiptImage') {
-      const receiptParsed = this.parseReceiptFields(receiptOcr, settings.reviewThreshold);
-      parsed = receiptParsed.parsed;
-      receiptLowConfidenceWarning = receiptParsed.lowConfidenceWarning;
-    } else if (primaryDocument === 'bidSheetImage') {
-      parsed = this.parseBidSheetFields(bidSheetOcr, settings.reviewThreshold);
-    } else if (primaryDocument === 'powerOfAttorneyImage') {
-      parsed = this.parsePowerOfAttorneyFields(powerOfAttorneyOcr, settings.reviewThreshold);
-    } else {
-      parsed = this.parseSignPdfFields(signPdfOcr, settings);
-    }
-
-    if (primaryDocument === 'receiptImage') {
-      this.logReceiptConfidenceDebug(receiptOcr, parsed);
-    }
+    this.logger.log(
+      `processUpload completed in ${Date.now() - startedAt}ms for ${primaryDocument}`,
+    );
 
     return {
       success: true,
       files: {
-        signPdf: signPdf ? this.toMetadata(signPdf) : null,
-        powerOfAttorneyImage: powerOfAttorneyImage
-          ? this.toMetadata(powerOfAttorneyImage)
-          : null,
-        receiptImage: receiptImage ? this.toMetadata(receiptImage) : null,
-        bidSheetImage: bidSheetImage ? this.toMetadata(bidSheetImage) : null,
+        signPdf: signPdfResult.file,
+        powerOfAttorneyImage: powerOfAttorneyResult.file,
+        receiptImage: receiptResult.file,
+        bidSheetImage: bidSheetResult.file,
       },
       ocr: {
-        signPdfText: signPdfOcr.text,
-        signPdfLines: signPdfOcr.lines,
-        signPdfFormFields: signPdfOcr.formFields,
-        signPdfEntities: signPdfOcr.entities,
-        signPdfOcrError: signPdfOcr.error,
-        powerOfAttorneyImageText: powerOfAttorneyOcr.text,
-        powerOfAttorneyImageLines: powerOfAttorneyOcr.lines,
-        powerOfAttorneyImageFormFields: powerOfAttorneyOcr.formFields,
-        powerOfAttorneyImageEntities: powerOfAttorneyOcr.entities,
-        powerOfAttorneyImageOcrError: powerOfAttorneyOcr.error,
-        receiptImageText: receiptOcr.text,
-        receiptImageLines: receiptOcr.lines,
-        receiptImageFormFields: receiptOcr.formFields,
-        receiptImageEntities: receiptOcr.entities,
-        receiptImageOcrError: receiptOcr.error,
-        bidSheetImageText: bidSheetOcr.text,
-        bidSheetImageLines: bidSheetOcr.lines,
-        bidSheetImageFormFields: bidSheetOcr.formFields,
-        bidSheetImageEntities: bidSheetOcr.entities,
-        bidSheetImageOcrError: bidSheetOcr.error,
+        signPdfText: signPdfResult.ocr.text,
+        signPdfLines: signPdfResult.ocr.lines,
+        signPdfFormFields: signPdfResult.ocr.formFields,
+        signPdfEntities: signPdfResult.ocr.entities,
+        signPdfOcrError: signPdfResult.ocr.error,
+        powerOfAttorneyImageText: powerOfAttorneyResult.ocr.text,
+        powerOfAttorneyImageLines: powerOfAttorneyResult.ocr.lines,
+        powerOfAttorneyImageFormFields: powerOfAttorneyResult.ocr.formFields,
+        powerOfAttorneyImageEntities: powerOfAttorneyResult.ocr.entities,
+        powerOfAttorneyImageOcrError: powerOfAttorneyResult.ocr.error,
+        receiptImageText: receiptResult.ocr.text,
+        receiptImageLines: receiptResult.ocr.lines,
+        receiptImageFormFields: receiptResult.ocr.formFields,
+        receiptImageEntities: receiptResult.ocr.entities,
+        receiptImageOcrError: receiptResult.ocr.error,
+        bidSheetImageText: bidSheetResult.ocr.text,
+        bidSheetImageLines: bidSheetResult.ocr.lines,
+        bidSheetImageFormFields: bidSheetResult.ocr.formFields,
+        bidSheetImageEntities: bidSheetResult.ocr.entities,
+        bidSheetImageOcrError: bidSheetResult.ocr.error,
         receiptImagePreprocessedImageBase64:
-          receiptOcrWithDebug.preprocessedImageBase64,
+          receiptResult.receiptDebug?.preprocessedImageBase64 ?? null,
         receiptImagePreprocessedImageMimeType:
-          receiptOcrWithDebug.preprocessedImageMimeType,
-        receiptImagePreprocessAngle: receiptOcrWithDebug.preprocessAngle,
-        receiptImagePreprocessShear: receiptOcrWithDebug.preprocessShear,
-        receiptImagePreprocessCropApplied: receiptOcrWithDebug.preprocessCropApplied,
+          receiptResult.receiptDebug?.preprocessedImageMimeType ?? null,
+        receiptImagePreprocessAngle:
+          receiptResult.receiptDebug?.preprocessAngle ?? null,
+        receiptImagePreprocessShear:
+          receiptResult.receiptDebug?.preprocessShear ?? null,
+        receiptImagePreprocessCropApplied:
+          receiptResult.receiptDebug?.preprocessCropApplied ?? false,
       },
       lowConfidenceWarning: {
-        receiptCaseNumber: receiptLowConfidenceWarning.caseNumber,
-        receiptItemNumber: receiptLowConfidenceWarning.itemNumber,
+        receiptCaseNumber: receiptResult.receiptLowConfidenceWarning.caseNumber,
+        receiptItemNumber: receiptResult.receiptLowConfidenceWarning.itemNumber,
+      },
+      parsed: primaryResult.parsed ?? this.createEmptyParsedResult(),
+    };
+  }
+
+  async speedTestSignPdfV1Upload(file: Express.Multer.File, rawMode?: string) {
+    const startedAt = Date.now();
+    const mode = this.toSignPdfSpeedTestMode(rawMode);
+    const settings = await this.verificationSettingsService.getSettings();
+    let prepareInputMs = 0;
+    let ocrMs = 0;
+    let optimization: SignPdfSpeedTestInput['optimization'];
+    let ocr: OcrDetailedResult;
+    let fallbackUsed = false;
+    let previewInput: SignPdfSpeedTestInput | null = null;
+
+    if (mode === 'fast_first') {
+      const fastPrepareStartedAt = Date.now();
+      const fastInput = await this.prepareSignPdfSpeedTestInput(file, 'crop_top');
+      prepareInputMs += Date.now() - fastPrepareStartedAt;
+
+      const fastOcrStartedAt = Date.now();
+      const fastOcr = await this.extractSignPdfOcrFromPayload(
+        fastInput.buffer,
+        fastInput.mimeType,
+        'aggressive_plus',
+      );
+      ocrMs += Date.now() - fastOcrStartedAt;
+
+      if (
+        !fastOcr.error &&
+        this.isFastFirstResultSufficient(
+          this.parseSignPdfFields(fastOcr, settings),
+        )
+      ) {
+        optimization = {
+          ...fastInput.optimization,
+          strategy: `fast_first_success:${fastInput.optimization.strategy}`,
+        };
+        ocr = fastOcr;
+        previewInput = fastInput;
+      } else {
+        fallbackUsed = true;
+        const fullPrepareStartedAt = Date.now();
+        const fullInput = await this.prepareSignPdfSpeedTestInput(file, 'custom');
+        prepareInputMs += Date.now() - fullPrepareStartedAt;
+
+        const fullOcrStartedAt = Date.now();
+        const fullOcr = await this.extractSignPdfOcrFromPayload(
+          fullInput.buffer,
+          fullInput.mimeType,
+          'custom',
+        );
+        ocrMs += Date.now() - fullOcrStartedAt;
+        optimization = {
+          ...fullInput.optimization,
+          strategy: `fast_first_fallback:${fastInput.optimization.strategy}->${fullInput.optimization.strategy}`,
+        };
+        ocr = fullOcr;
+        previewInput = fullInput;
+      }
+    } else {
+      const prepareStartedAt = Date.now();
+      const optimizedInput = await this.prepareSignPdfSpeedTestInput(file, mode);
+      prepareInputMs = Date.now() - prepareStartedAt;
+      const ocrStartedAt = Date.now();
+      ocr = await this.extractSignPdfOcrFromPayload(
+        optimizedInput.buffer,
+        optimizedInput.mimeType,
+        mode,
+      );
+      ocrMs = Date.now() - ocrStartedAt;
+      optimization = optimizedInput.optimization;
+      previewInput = optimizedInput;
+    }
+
+    if (ocr.error) {
+      throw new ServiceUnavailableException(
+        `OCR temporarily unavailable for signPdf: ${ocr.error}`,
+      );
+    }
+
+    const parseStartedAt = Date.now();
+    const parsed = this.parseSignPdfFields(ocr, settings);
+    const parseMs = Date.now() - parseStartedAt;
+    const preview = await this.createSignPdfSpeedTestPreview(
+      file,
+      previewInput ?? {
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        optimization,
+      },
+    );
+    return {
+      success: true,
+      label: '속도 테스트 1 - 전자본인서명확인서',
+      functionName: 'speedTestSignPdfV1Upload',
+      endpointPath: '/verification/speed-test/1',
+      elapsedMs: Date.now() - startedAt,
+      mode,
+      file: this.toMetadata(file),
+      timings: {
+        prepareInputMs,
+        ocrMs,
+        parseMs,
+        totalMs: Date.now() - startedAt,
+      },
+      fallbackUsed,
+      optimization,
+      preview: {
+        imageBase64: preview.imageBase64,
+        mimeType: preview.mimeType,
+        coordinateSpace: {
+          width: preview.width,
+          height: preview.height,
+        },
+      },
+      ocr: {
+        signPdfText: ocr.text,
+        signPdfLines: ocr.lines,
+        signPdfFormFields: ocr.formFields,
+        signPdfEntities: ocr.entities,
+        signPdfOcrError: ocr.error,
       },
       parsed,
+    };
+  }
+
+  async speedTestSignPdfV2Upload(file: Express.Multer.File, rawMode?: string) {
+    const result = await this.speedTestSignPdfV1Upload(file, rawMode);
+    return {
+      ...result,
+      label: '속도 테스트 2 - 전자본인서명확인서',
+      functionName: 'speedTestSignPdfV2Upload',
+      endpointPath: '/verification/speed-test/2',
+    };
+  }
+
+  async speedTestPowerOfAttorneyV2Upload(
+    file: Express.Multer.File,
+    rawMode?: string,
+  ) {
+    const startedAt = Date.now();
+    const mode = this.toSignPdfSpeedTestMode(rawMode);
+    const settings = await this.verificationSettingsService.getSettings();
+    let prepareInputMs = 0;
+    let ocrMs = 0;
+    let optimization: SignPdfSpeedTestInput['optimization'];
+    let ocr: OcrDetailedResult;
+    let fallbackUsed = false;
+    let previewInput: SignPdfSpeedTestInput | null = null;
+
+    if (mode === 'fast_first') {
+      const fastPrepareStartedAt = Date.now();
+      const fastInput = await this.preparePowerOfAttorneySpeedTestInput(
+        file,
+        'crop_top_plus',
+      );
+      prepareInputMs += Date.now() - fastPrepareStartedAt;
+
+      const fastOcrStartedAt = Date.now();
+      const fastOcr = await this.extractImageOcrFromPayload(
+        fastInput.buffer,
+        fastInput.mimeType,
+      );
+      ocrMs += Date.now() - fastOcrStartedAt;
+
+      if (
+        !fastOcr.error &&
+        this.isPowerOfAttorneyFastResultSufficient(
+          this.parsePowerOfAttorneyFields(fastOcr, settings.reviewThreshold),
+        )
+      ) {
+        optimization = {
+          ...fastInput.optimization,
+          strategy: `fast_first_success:${fastInput.optimization.strategy}`,
+        };
+        ocr = fastOcr;
+        previewInput = fastInput;
+      } else {
+        fallbackUsed = true;
+        const fullPrepareStartedAt = Date.now();
+        const fullInput = await this.preparePowerOfAttorneySpeedTestInput(
+          file,
+          'custom',
+        );
+        prepareInputMs += Date.now() - fullPrepareStartedAt;
+
+        const fullOcrStartedAt = Date.now();
+        const fullOcr = await this.extractImageOcrFromPayload(
+          fullInput.buffer,
+          fullInput.mimeType,
+        );
+        ocrMs += Date.now() - fullOcrStartedAt;
+        optimization = {
+          ...fullInput.optimization,
+          strategy: `fast_first_fallback:${fastInput.optimization.strategy}->${fullInput.optimization.strategy}`,
+        };
+        ocr = fullOcr;
+        previewInput = fullInput;
+      }
+    } else {
+      const prepareStartedAt = Date.now();
+      const optimizedInput = await this.preparePowerOfAttorneySpeedTestInput(
+        file,
+        mode,
+      );
+      prepareInputMs = Date.now() - prepareStartedAt;
+      const ocrStartedAt = Date.now();
+      ocr = await this.extractImageOcrFromPayload(
+        optimizedInput.buffer,
+        optimizedInput.mimeType,
+      );
+      ocrMs = Date.now() - ocrStartedAt;
+      optimization = optimizedInput.optimization;
+      previewInput = optimizedInput;
+    }
+
+    if (ocr.error) {
+      throw new ServiceUnavailableException(
+        `OCR temporarily unavailable for powerOfAttorneyImage: ${ocr.error}`,
+      );
+    }
+
+    const parseStartedAt = Date.now();
+    const parsed = this.parsePowerOfAttorneyFields(ocr, settings.reviewThreshold);
+    const parseMs = Date.now() - parseStartedAt;
+    const preview = await this.createPowerOfAttorneyPreview(
+      file,
+      previewInput ?? {
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        optimization,
+      },
+    );
+    return {
+      success: true,
+      label: '속도 테스트 2 - 위임장',
+      functionName: 'speedTestPowerOfAttorneyV2Upload',
+      endpointPath: '/verification/speed-test/2',
+      mode,
+      file: this.toMetadata(file),
+      timings: {
+        prepareInputMs,
+        ocrMs,
+        parseMs,
+        totalMs: Date.now() - startedAt,
+      },
+      fallbackUsed,
+      optimization,
+      preview: {
+        imageBase64: preview.imageBase64,
+        mimeType: preview.mimeType,
+        coordinateSpace: {
+          width: preview.width,
+          height: preview.height,
+        },
+      },
+      ocr: {
+        powerOfAttorneyImageText: ocr.text,
+        powerOfAttorneyImageLines: ocr.lines,
+        powerOfAttorneyImageFormFields: ocr.formFields,
+        powerOfAttorneyImageEntities: ocr.entities,
+        powerOfAttorneyImageOcrError: ocr.error,
+      },
+      parsed,
+    };
+  }
+
+  async speedTestReceiptV3Upload(file: Express.Multer.File, rawMode?: string) {
+    const startedAt = Date.now();
+    const mode = this.toReceiptSpeedTestMode(rawMode);
+    const settings = await this.verificationSettingsService.getSettings();
+    let prepareInputMs = 0;
+    let ocrMs = 0;
+    let optimization: SignPdfSpeedTestInput['optimization'];
+    let ocrPayload: ReceiptSpeedTestOcrPayload;
+    let fallbackUsed = false;
+
+    if (mode === 'fast_first') {
+      const fastPrepareStartedAt = Date.now();
+      const fastInput = await this.prepareReceiptSpeedTestInput(
+        file,
+        'crop_table',
+      );
+      prepareInputMs += Date.now() - fastPrepareStartedAt;
+
+      const fastOcrStartedAt = Date.now();
+      const fastOcr = await this.extractReceiptOcrFromPayload(
+        fastInput.buffer,
+        fastInput.mimeType,
+      );
+      ocrMs += Date.now() - fastOcrStartedAt;
+
+      const fastParsed = this.parseReceiptFields(
+        fastOcr.result,
+        settings.reviewThreshold,
+      );
+      if (
+        !fastOcr.result.error &&
+        this.isReceiptFastResultSufficient(fastParsed.parsed)
+      ) {
+        optimization = {
+          ...fastInput.optimization,
+          strategy: `fast_first_success:${fastInput.optimization.strategy}`,
+        };
+        ocrPayload = fastOcr;
+      } else {
+        fallbackUsed = true;
+        const fallbackOcrStartedAt = Date.now();
+        const fallbackOcr = await this.extractReceiptOcrWithPreprocess(file);
+        ocrMs += Date.now() - fallbackOcrStartedAt;
+        optimization = {
+          applied: true,
+          strategy: `fast_first_fallback:${fastInput.optimization.strategy}->receipt_preprocess_pipeline`,
+          sourceMimeType: file.mimetype,
+          outputMimeType: fallbackOcr.previewMimeType,
+          originalBytes: file.size,
+          optimizedBytes: fallbackOcr.previewBuffer.length,
+        };
+        ocrPayload = fallbackOcr;
+      }
+    } else if (mode === 'preprocess') {
+      const ocrStartedAt = Date.now();
+      ocrPayload = await this.extractReceiptOcrWithPreprocess(file);
+      ocrMs = Date.now() - ocrStartedAt;
+      optimization = {
+        applied: true,
+        strategy: 'receipt_preprocess_pipeline',
+        sourceMimeType: file.mimetype,
+        outputMimeType: ocrPayload.previewMimeType,
+        originalBytes: file.size,
+        optimizedBytes: ocrPayload.previewBuffer.length,
+      };
+    } else if (mode === 'generic_receipt') {
+      const prepareStartedAt = Date.now();
+      const optimizedInput = await this.prepareReceiptSpeedTestInput(file, 'custom');
+      prepareInputMs = Date.now() - prepareStartedAt;
+      const ocrStartedAt = Date.now();
+      ocrPayload = await this.extractReceiptOcrFromPayload(
+        optimizedInput.buffer,
+        optimizedInput.mimeType,
+        true,
+      );
+      ocrMs = Date.now() - ocrStartedAt;
+      optimization = {
+        ...optimizedInput.optimization,
+        strategy: 'receipt_original_passthrough_generic_ocr',
+      };
+    } else {
+      const prepareStartedAt = Date.now();
+      const optimizedInput = await this.prepareReceiptSpeedTestInput(file, mode);
+      prepareInputMs = Date.now() - prepareStartedAt;
+      const ocrStartedAt = Date.now();
+      ocrPayload = await this.extractReceiptOcrFromPayload(
+        optimizedInput.buffer,
+        optimizedInput.mimeType,
+      );
+      ocrMs = Date.now() - ocrStartedAt;
+      optimization = optimizedInput.optimization;
+    }
+
+    if (ocrPayload.result.error) {
+      throw new ServiceUnavailableException(
+        `OCR temporarily unavailable for receiptImage: ${ocrPayload.result.error}`,
+      );
+    }
+
+    const parseStartedAt = Date.now();
+    const parsedResult = this.parseReceiptFields(
+      ocrPayload.result,
+      settings.reviewThreshold,
+    );
+    const parseMs = Date.now() - parseStartedAt;
+    const preview = await this.createReceiptSpeedTestPreview(
+      ocrPayload.previewBuffer,
+      ocrPayload.previewMimeType,
+    );
+
+    return {
+      success: true,
+      label: '속도 테스트 3 - 영수증',
+      functionName: 'speedTestReceiptV3Upload',
+      endpointPath: '/verification/speed-test/3',
+      mode,
+      file: this.toMetadata(file),
+      timings: {
+        prepareInputMs,
+        ocrMs,
+        parseMs,
+        totalMs: Date.now() - startedAt,
+      },
+      fallbackUsed,
+      optimization,
+      preprocess: {
+        applied: ocrPayload.preprocessApplied,
+        angle: ocrPayload.preprocessAngle,
+        shear: ocrPayload.preprocessShear,
+        cropApplied: ocrPayload.preprocessCropApplied,
+        selectedCandidate: ocrPayload.selectedCandidate,
+      },
+      preview: {
+        imageBase64: preview.imageBase64,
+        mimeType: preview.mimeType,
+        coordinateSpace: {
+          width: preview.width,
+          height: preview.height,
+        },
+      },
+      ocr: {
+        receiptImageText: ocrPayload.result.text,
+        receiptImageLines: ocrPayload.result.lines,
+        receiptImageFormFields: ocrPayload.result.formFields,
+        receiptImageEntities: ocrPayload.result.entities,
+        receiptImageOcrError: ocrPayload.result.error,
+      },
+      lowConfidenceWarning: parsedResult.lowConfidenceWarning,
+      parsed: parsedResult.parsed,
+    };
+  }
+
+  async speedTestBidSheetV4Upload(file: Express.Multer.File, rawMode?: string) {
+    const startedAt = Date.now();
+    const mode = this.toBidSheetSpeedTestMode(rawMode);
+    const settings = await this.verificationSettingsService.getSettings();
+    let prepareInputMs = 0;
+    let ocrMs = 0;
+    let optimization: SignPdfSpeedTestInput['optimization'];
+    let ocr: OcrDetailedResult;
+    let previewInput: SignPdfSpeedTestInput | null = null;
+    let fallbackUsed = false;
+
+    if (mode === 'fast_first') {
+      const fastPrepareStartedAt = Date.now();
+      const fastInput = await this.prepareBidSheetSpeedTestInput(
+        file,
+        'crop_table',
+      );
+      prepareInputMs += Date.now() - fastPrepareStartedAt;
+
+      const fastOcrStartedAt = Date.now();
+      const fastOcr = await this.extractImageOcrFromPayload(
+        fastInput.buffer,
+        fastInput.mimeType,
+      );
+      ocrMs += Date.now() - fastOcrStartedAt;
+
+      const fastParsed = this.parseBidSheetFields(
+        fastOcr,
+        settings.reviewThreshold,
+      );
+      if (
+        !fastOcr.error &&
+        this.isBidSheetFastResultSufficient(fastParsed)
+      ) {
+        optimization = {
+          ...fastInput.optimization,
+          strategy: `fast_first_success:${fastInput.optimization.strategy}`,
+        };
+        ocr = fastOcr;
+        previewInput = fastInput;
+      } else {
+        fallbackUsed = true;
+        const fullPrepareStartedAt = Date.now();
+        const fullInput = await this.prepareBidSheetSpeedTestInput(file, 'custom');
+        prepareInputMs += Date.now() - fullPrepareStartedAt;
+
+        const fullOcrStartedAt = Date.now();
+        const fullOcr = await this.extractImageOcrFromPayload(
+          fullInput.buffer,
+          fullInput.mimeType,
+        );
+        ocrMs += Date.now() - fullOcrStartedAt;
+        optimization = {
+          ...fullInput.optimization,
+          strategy: `fast_first_fallback:${fastInput.optimization.strategy}->${fullInput.optimization.strategy}`,
+        };
+        ocr = fullOcr;
+        previewInput = fullInput;
+      }
+    } else {
+      const effectiveMode = mode === 'generic_bid_sheet' ? 'custom' : mode;
+      const prepareStartedAt = Date.now();
+      const optimizedInput = await this.prepareBidSheetSpeedTestInput(
+        file,
+        effectiveMode,
+      );
+      prepareInputMs = Date.now() - prepareStartedAt;
+      const ocrStartedAt = Date.now();
+      ocr = await this.extractImageOcrFromPayload(
+        optimizedInput.buffer,
+        optimizedInput.mimeType,
+        mode === 'generic_bid_sheet',
+      );
+      ocrMs = Date.now() - ocrStartedAt;
+      optimization =
+        mode === 'generic_bid_sheet'
+          ? {
+              ...optimizedInput.optimization,
+              strategy: 'bid_sheet_original_passthrough_generic_ocr',
+            }
+          : optimizedInput.optimization;
+      previewInput = optimizedInput;
+    }
+
+    if (ocr.error) {
+      throw new ServiceUnavailableException(
+        `OCR temporarily unavailable for bidSheetImage: ${ocr.error}`,
+      );
+    }
+
+    const parseStartedAt = Date.now();
+    const parsed = this.parseBidSheetFields(ocr, settings.reviewThreshold);
+    const parseMs = Date.now() - parseStartedAt;
+    const preview = await this.createPowerOfAttorneyPreview(
+      file,
+      previewInput ?? {
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        optimization,
+      },
+    );
+
+    return {
+      success: true,
+      label: '속도 테스트 4 - 기일입찰표',
+      functionName: 'speedTestBidSheetV4Upload',
+      endpointPath: '/verification/speed-test/4',
+      mode,
+      file: this.toMetadata(file),
+      timings: {
+        prepareInputMs,
+        ocrMs,
+        parseMs,
+        totalMs: Date.now() - startedAt,
+      },
+      fallbackUsed,
+      optimization,
+      preview: {
+        imageBase64: preview.imageBase64,
+        mimeType: preview.mimeType,
+        coordinateSpace: {
+          width: preview.width,
+          height: preview.height,
+        },
+      },
+      ocr: {
+        bidSheetImageText: ocr.text,
+        bidSheetImageLines: ocr.lines,
+        bidSheetImageFormFields: ocr.formFields,
+        bidSheetImageEntities: ocr.entities,
+        bidSheetImageOcrError: ocr.error,
+      },
+      parsed: {
+        caseNumber: parsed.caseNumber,
+        itemName: parsed.itemName,
+      },
+    };
+  }
+
+  private async processSignPdfUpload(
+    file: Express.Multer.File,
+    settings: VerificationSettings,
+  ): Promise<DocumentProcessingResult> {
+    const ocr = await this.extractSignPdfOcr(file);
+    return {
+      file: this.toMetadata(file),
+      ocr,
+      parsed: ocr.error ? null : this.parseSignPdfFields(ocr, settings),
+      receiptDebug: null,
+      receiptLowConfidenceWarning: this.createEmptyReceiptLowConfidenceWarning(),
+    };
+  }
+
+  private async processPowerOfAttorneyImageUpload(
+    file: Express.Multer.File,
+    reviewThreshold: number,
+  ): Promise<DocumentProcessingResult> {
+    const ocr = await this.extractImageOcr(file);
+    if (!ocr.error) {
+    }
+
+    return {
+      file: this.toMetadata(file),
+      ocr,
+      parsed: ocr.error
+        ? null
+        : this.parsePowerOfAttorneyFields(ocr, reviewThreshold),
+      receiptDebug: null,
+      receiptLowConfidenceWarning: this.createEmptyReceiptLowConfidenceWarning(),
+    };
+  }
+
+  private async processReceiptImageUpload(
+    file: Express.Multer.File,
+    applyReceiptPreprocess: boolean,
+    reviewThreshold: number,
+  ): Promise<DocumentProcessingResult> {
+    const receiptDebug = await this.extractReceiptOcr(
+      file,
+      applyReceiptPreprocess,
+    );
+    const ocr = receiptDebug.result;
+
+    if (ocr.error) {
+      return {
+        file: this.toMetadata(file),
+        ocr,
+        parsed: null,
+        receiptDebug,
+        receiptLowConfidenceWarning:
+          this.createEmptyReceiptLowConfidenceWarning(),
+      };
+    }
+
+    const parsedResult = this.parseReceiptFields(ocr, reviewThreshold);
+    this.logReceiptConfidenceDebug(ocr, parsedResult.parsed);
+    return {
+      file: this.toMetadata(file),
+      ocr,
+      parsed: parsedResult.parsed,
+      receiptDebug,
+      receiptLowConfidenceWarning: parsedResult.lowConfidenceWarning,
+    };
+  }
+
+  private async processBidSheetImageUpload(
+    file: Express.Multer.File,
+    reviewThreshold: number,
+  ): Promise<DocumentProcessingResult> {
+    const ocr = await this.extractImageOcr(file);
+    return {
+      file: this.toMetadata(file),
+      ocr,
+      parsed: ocr.error ? null : this.parseBidSheetFields(ocr, reviewThreshold),
+      receiptDebug: null,
+      receiptLowConfidenceWarning: this.createEmptyReceiptLowConfidenceWarning(),
+    };
+  }
+
+  private createEmptyDocumentProcessingResult(): DocumentProcessingResult {
+    return {
+      file: null,
+      ocr: this.createEmptyOcrResult(),
+      parsed: null,
+      receiptDebug: null,
+      receiptLowConfidenceWarning: this.createEmptyReceiptLowConfidenceWarning(),
+    };
+  }
+
+  private createEmptyOcrResult(): OcrDetailedResult {
+    return {
+      text: '',
+      lines: [],
+      formFields: [],
+      entities: [],
+      error: null,
+    };
+  }
+
+  private createEmptyReceiptLowConfidenceWarning(): ReceiptLowConfidenceWarning {
+    return {
+      caseNumber: false,
+      itemNumber: false,
+    };
+  }
+
+  private createEmptyParsedResult(): ParsedResult {
+    return {
+      principalName: {
+        value: null,
+        confidence: null,
+        needsReview: true,
+      },
+      purposeCourtName: {
+        value: null,
+        confidence: null,
+        needsReview: true,
+      },
+      caseNumber: {
+        value: null,
+        confidence: null,
+        needsReview: true,
+      },
+      itemName: {
+        value: null,
+        confidence: null,
+        needsReview: true,
+      },
+      submissionInstitution: {
+        value: null,
+        confidence: null,
+        needsReview: true,
+      },
+      agentName: {
+        value: null,
+        confidence: null,
+        needsReview: true,
+      },
     };
   }
 
@@ -219,18 +1071,24 @@ export class VerificationService {
     ocr: OcrDetailedResult,
     reviewThreshold: number,
   ): ParsedResult {
-    const caseNumberCandidate =
-      this.normalizeReceiptCaseNumberCandidate(
-        this.findByEntity(ocr.entities, ['caseNumber', 'case_number', '사건번호']) ??
-          this.findByFormField(ocr.formFields, ['사건번호', '사건 번호']) ??
-          this.findReceiptCaseNumberByPattern(ocr),
-      );
-    const itemNumberCandidate =
-      this.normalizeReceiptItemNumberCandidate(
-        this.findByEntity(ocr.entities, ['itemNumber', 'item_number', '물건번호']) ??
-          this.findByFormField(ocr.formFields, ['물건번호', '물건 번호']) ??
-          this.findReceiptItemNumberByPattern(ocr),
-      );
+    const caseNumberCandidate = this.normalizeReceiptCaseNumberCandidate(
+      this.findByEntity(ocr.entities, [
+        'caseNumber',
+        'case_number',
+        '사건번호',
+      ]) ??
+        this.findByFormField(ocr.formFields, ['사건번호', '사건 번호']) ??
+        this.findReceiptCaseNumberByPattern(ocr),
+    );
+    const itemNumberCandidate = this.normalizeReceiptItemNumberCandidate(
+      this.findByEntity(ocr.entities, [
+        'itemNumber',
+        'item_number',
+        '물건번호',
+      ]) ??
+        this.findByFormField(ocr.formFields, ['물건번호', '물건 번호']) ??
+        this.findReceiptItemNumberByPattern(ocr),
+    );
 
     return {
       principalName: {
@@ -291,8 +1149,12 @@ export class VerificationService {
     );
     const caseValue = caseNumberCandidate?.value ?? null;
     const itemValue = itemNumberCandidate?.value ?? null;
-    const caseMatched = caseValue ? this.isValidReceiptCaseNumber(caseValue) : false;
-    const itemMatched = itemValue ? this.isValidReceiptItemNumber(itemValue) : false;
+    const caseMatched = caseValue
+      ? this.isValidReceiptCaseNumber(caseValue)
+      : false;
+    const itemMatched = itemValue
+      ? this.isValidReceiptItemNumber(itemValue)
+      : false;
 
     const caseParsed = this.toReceiptParsedField(
       caseNumberCandidate,
@@ -485,7 +1347,9 @@ export class VerificationService {
       ...ocr.entities.map((entity) => entity.mentionText),
     ];
 
-    return source.map((item) => item ?? '').filter((item) => item.trim().length > 0);
+    return source
+      .map((item) => item ?? '')
+      .filter((item) => item.trim().length > 0);
   }
 
   private extractCaseNumberFromText(text: string): string | null {
@@ -561,48 +1425,874 @@ export class VerificationService {
     };
   }
 
-  private async extractSignPdfOcr(file: Express.Multer.File): Promise<OcrDetailedResult> {
+  private async extractSignPdfOcr(
+    file: Express.Multer.File,
+  ): Promise<OcrDetailedResult> {
+    return this.extractSignPdfOcrFromPayload(file.buffer, file.mimetype);
+  }
+
+  private async extractSignPdfOcrFromPayload(
+    buffer: Buffer,
+    mimeType: string,
+    mode: SignPdfSpeedTestMode = 'custom',
+  ): Promise<OcrDetailedResult> {
+    const startedAt = Date.now();
     const customProcessorId =
       process.env.GOOGLE_CUSTOM_PROCESSOR_ID ||
       process.env.GCP_CUSTOM_PROCESSOR_ID ||
       '';
 
-    if (customProcessorId) {
-      if (file.mimetype === 'application/pdf') {
-        const customResult = await this.ocrEngineService.recognizePdfDetailedWithProcessor(
-          file.buffer,
-          customProcessorId,
+    if (mode === 'layout') {
+      const layoutMimeType =
+        mimeType === 'application/pdf' ? mimeType : 'application/pdf';
+      const layoutBuffer = buffer;
+      if (layoutMimeType === 'application/pdf') {
+        const result =
+          await this.ocrEngineService.recognizePdfWithLayoutParserDetailed(
+            layoutBuffer,
+          );
+        this.logger.log(
+          `extractSignPdfOcr completed in ${Date.now() - startedAt}ms using forced layout mode`,
         );
+        return result;
+      }
+    }
+
+    if (customProcessorId) {
+      if (mimeType === 'application/pdf') {
+        const customResult =
+          await this.ocrEngineService.recognizePdfDetailedWithProcessor(
+            buffer,
+            customProcessorId,
+          );
         if (!customResult.error) {
+          this.logger.log(
+            `extractSignPdfOcr completed in ${Date.now() - startedAt}ms using custom processor`,
+          );
           return customResult;
         }
 
         // Custom processor가 일시 오류(예: 13 INTERNAL)일 때 PDF 전용 fallback으로 한 번 더 시도한다.
         const layoutFallback =
           await this.ocrEngineService.recognizePdfWithLayoutParserDetailed(
-            file.buffer,
+            buffer,
           );
         if (!layoutFallback.error) {
+          this.logger.log(
+            `extractSignPdfOcr completed in ${Date.now() - startedAt}ms using layout fallback`,
+          );
           return layoutFallback;
         }
 
+        this.logger.log(
+          `extractSignPdfOcr completed in ${Date.now() - startedAt}ms with custom processor error`,
+        );
         return customResult;
       }
-      return this.ocrEngineService.recognizeImageDetailedWithProcessor(
-        file.buffer,
-        file.mimetype,
-        customProcessorId,
+      const result =
+        await this.ocrEngineService.recognizeImageDetailedWithProcessor(
+          buffer,
+          mimeType,
+          customProcessorId,
+        );
+      this.logger.log(
+        `extractSignPdfOcr completed in ${Date.now() - startedAt}ms for image signPdf`,
       );
+      return result;
+    }
+
+    if (mimeType === 'application/pdf') {
+      const result =
+        await this.ocrEngineService.recognizePdfWithLayoutParserDetailed(
+          buffer,
+        );
+      this.logger.log(
+        `extractSignPdfOcr completed in ${Date.now() - startedAt}ms using layout parser`,
+      );
+      return result;
+    }
+
+    const result = await this.ocrEngineService.recognizeImageDetailed(
+      buffer,
+      mimeType,
+    );
+    this.logger.log(
+      `extractSignPdfOcr completed in ${Date.now() - startedAt}ms using generic image OCR`,
+    );
+    return result;
+  }
+
+  private async prepareSignPdfSpeedTestInput(
+    file: Express.Multer.File,
+    mode: SignPdfSpeedTestMode,
+  ): Promise<SignPdfSpeedTestInput> {
+    const originalBytes = file.size;
+    const density =
+      mode === 'aggressive_plus' ? 155 : mode === 'aggressive' ? 170 : 200;
+    const maxEdge =
+      mode === 'aggressive_plus' ? 1550 : mode === 'aggressive' ? 1800 : 2200;
+
+    if (file.mimetype === 'application/pdf' && mode !== 'layout') {
+      const resizedBuffer = await sharp(file.buffer, { density, page: 0 })
+        .resize({
+          width: maxEdge,
+          height: maxEdge,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .png({ compressionLevel: 6 })
+        .toBuffer();
+
+      let outputBuffer = resizedBuffer;
+
+      if (mode === 'crop_top') {
+        const resizedMetadata = await sharp(resizedBuffer).metadata();
+        const width = resizedMetadata.width ?? 0;
+        const height = resizedMetadata.height ?? 0;
+        if (width > 0 && height > 0) {
+          outputBuffer = await sharp(resizedBuffer)
+            .extract({
+              left: Math.floor(width * 0.04),
+              top: 0,
+              width: Math.max(1, Math.min(width, Math.floor(width * 0.92))),
+              height: Math.max(1, Math.min(height, Math.floor(height * 0.78))),
+            })
+            .png({ compressionLevel: 6 })
+            .toBuffer();
+        }
+      }
+
+      return {
+        buffer: outputBuffer,
+        mimeType: 'image/png',
+        optimization: {
+          applied: true,
+          strategy:
+            mode === 'aggressive_plus'
+              ? 'pdf_first_page_to_png_density_155_resize_1550_no_grayscale'
+              : mode === 'aggressive'
+                ? 'pdf_first_page_to_png_density_170_resize_1800_no_grayscale'
+                : mode === 'crop_top'
+                  ? 'pdf_first_page_crop_top_density_200_resize_2200_no_grayscale'
+                  : 'pdf_first_page_to_png_density_200_resize_2200_no_grayscale',
+          sourceMimeType: file.mimetype,
+          outputMimeType: 'image/png',
+          originalBytes,
+          optimizedBytes: outputBuffer.length,
+        },
+      };
+    }
+
+    if (file.mimetype === 'application/pdf' && mode === 'layout') {
+      return {
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        optimization: {
+          applied: false,
+          strategy: 'layout_parser_original_pdf_passthrough',
+          sourceMimeType: file.mimetype,
+          outputMimeType: file.mimetype,
+          originalBytes,
+          optimizedBytes: originalBytes,
+        },
+      };
+    }
+
+    if (file.mimetype.startsWith('image/')) {
+      const resizedBuffer = await sharp(file.buffer)
+        .resize({
+          width: maxEdge,
+          height: maxEdge,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .jpeg({ quality: 92, mozjpeg: true })
+        .toBuffer();
+
+      let outputBuffer = resizedBuffer;
+
+      if (mode === 'crop_top') {
+        const resizedMetadata = await sharp(resizedBuffer).metadata();
+        const width = resizedMetadata.width ?? 0;
+        const height = resizedMetadata.height ?? 0;
+        if (width > 0 && height > 0) {
+          outputBuffer = await sharp(resizedBuffer)
+            .extract({
+              left: Math.floor(width * 0.04),
+              top: 0,
+              width: Math.max(1, Math.min(width, Math.floor(width * 0.92))),
+              height: Math.max(1, Math.min(height, Math.floor(height * 0.78))),
+            })
+            .jpeg({ quality: 92, mozjpeg: true })
+            .toBuffer();
+        }
+      }
+
+      return {
+        buffer: outputBuffer,
+        mimeType: 'image/jpeg',
+        optimization: {
+          applied: true,
+          strategy:
+            mode === 'aggressive_plus'
+              ? 'image_resize_1550_jpeg_quality_92_no_grayscale'
+              : mode === 'aggressive'
+                ? 'image_resize_1800_jpeg_quality_92_no_grayscale'
+                : mode === 'crop_top'
+                  ? 'image_crop_top_resize_2200_jpeg_quality_92_no_grayscale'
+                  : 'image_resize_2200_jpeg_quality_92_no_grayscale',
+          sourceMimeType: file.mimetype,
+          outputMimeType: 'image/jpeg',
+          originalBytes,
+          optimizedBytes: outputBuffer.length,
+        },
+      };
+    }
+
+    return {
+      buffer: file.buffer,
+      mimeType: file.mimetype,
+      optimization: {
+        applied: false,
+        strategy: 'original_passthrough',
+        sourceMimeType: file.mimetype,
+        outputMimeType: file.mimetype,
+        originalBytes,
+        optimizedBytes: originalBytes,
+      },
+    };
+  }
+
+  private async createSignPdfSpeedTestPreview(
+    file: Express.Multer.File,
+    optimizedInput: SignPdfSpeedTestInput,
+  ): Promise<SignPdfPreviewPayload> {
+    if (optimizedInput.mimeType.startsWith('image/')) {
+      const metadata = await sharp(optimizedInput.buffer).metadata();
+      return {
+        imageBase64: optimizedInput.buffer.toString('base64'),
+        mimeType: optimizedInput.mimeType,
+        width: metadata.width ?? 1,
+        height: metadata.height ?? 1,
+      };
     }
 
     if (file.mimetype === 'application/pdf') {
-      return this.ocrEngineService.recognizePdfWithLayoutParserDetailed(file.buffer);
+      const previewBuffer = await sharp(file.buffer, { density: 200, page: 0 })
+        .resize({
+          width: 2200,
+          height: 2200,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .png({ compressionLevel: 6 })
+        .toBuffer();
+      const metadata = await sharp(previewBuffer).metadata();
+
+      return {
+        imageBase64: previewBuffer.toString('base64'),
+        mimeType: 'image/png',
+        width: metadata.width ?? 1,
+        height: metadata.height ?? 1,
+      };
     }
 
-    return this.ocrEngineService.recognizeImageDetailed(file.buffer, file.mimetype);
+    return {
+      imageBase64: null,
+      mimeType: null,
+      width: 1,
+      height: 1,
+    };
   }
 
-  private async extractImageOcr(file: Express.Multer.File): Promise<OcrDetailedResult> {
+  private async createPowerOfAttorneyPreview(
+    file: Express.Multer.File,
+    optimizedInput: SignPdfSpeedTestInput,
+  ): Promise<SignPdfPreviewPayload> {
+    if (optimizedInput.mimeType.startsWith('image/')) {
+      const metadata = await sharp(optimizedInput.buffer).metadata();
+      return {
+        imageBase64: optimizedInput.buffer.toString('base64'),
+        mimeType: optimizedInput.mimeType,
+        width: metadata.width ?? 1,
+        height: metadata.height ?? 1,
+      };
+    }
+
+    return {
+      imageBase64: null,
+      mimeType: null,
+      width: 1,
+      height: 1,
+    };
+  }
+
+  private async createReceiptSpeedTestPreview(
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<SignPdfPreviewPayload> {
+    if (!mimeType.startsWith('image/')) {
+      return {
+        imageBase64: null,
+        mimeType: null,
+        width: 1,
+        height: 1,
+      };
+    }
+
+    const metadata = await sharp(buffer).metadata();
+    return {
+      imageBase64: buffer.toString('base64'),
+      mimeType,
+      width: metadata.width ?? 1,
+      height: metadata.height ?? 1,
+    };
+  }
+
+  private async prepareBidSheetSpeedTestInput(
+    file: Express.Multer.File,
+    mode: Exclude<BidSheetSpeedTestMode, 'generic_bid_sheet' | 'fast_first'>,
+  ): Promise<SignPdfSpeedTestInput> {
+    const originalBytes = file.size;
+    if (!file.mimetype.startsWith('image/')) {
+      return {
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        optimization: {
+          applied: false,
+          strategy: 'bid_sheet_original_passthrough',
+          sourceMimeType: file.mimetype,
+          outputMimeType: file.mimetype,
+          originalBytes,
+          optimizedBytes: originalBytes,
+        },
+      };
+    }
+
+    if (mode === 'custom') {
+      return {
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        optimization: {
+          applied: false,
+          strategy: 'bid_sheet_original_passthrough',
+          sourceMimeType: file.mimetype,
+          outputMimeType: file.mimetype,
+          originalBytes,
+          optimizedBytes: originalBytes,
+        },
+      };
+    }
+
+    const maxEdge =
+      mode === 'aggressive_plus' ? 1350 : mode === 'aggressive' ? 1600 : 1900;
+    const quality =
+      mode === 'aggressive_plus' ? 82 : mode === 'aggressive' ? 86 : 88;
+    const resizedBuffer = await sharp(file.buffer)
+      .resize({
+        width: maxEdge,
+        height: maxEdge,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality, mozjpeg: true })
+      .toBuffer();
+
+    let outputBuffer = resizedBuffer;
+    if (mode === 'crop_table') {
+      const metadata = await sharp(resizedBuffer).metadata();
+      const width = metadata.width ?? 0;
+      const height = metadata.height ?? 0;
+      if (width > 0 && height > 0) {
+        const left = Math.max(0, Math.floor(width * 0.06));
+        const top = Math.max(0, Math.floor(height * 0.18));
+        const roiWidth = Math.max(120, Math.floor(width * 0.88));
+        const roiHeight = Math.max(120, Math.floor(height * 0.46));
+        const safeWidth = Math.min(roiWidth, width - left);
+        const safeHeight = Math.min(roiHeight, height - top);
+
+        if (safeWidth > 100 && safeHeight > 100) {
+          outputBuffer = await sharp(resizedBuffer)
+            .extract({
+              left,
+              top,
+              width: safeWidth,
+              height: safeHeight,
+            })
+            .jpeg({ quality, mozjpeg: true })
+            .toBuffer();
+        }
+      }
+    }
+
+    return {
+      buffer: outputBuffer,
+      mimeType: 'image/jpeg',
+      optimization: {
+        applied: true,
+        strategy:
+          mode === 'aggressive_plus'
+            ? 'bid_sheet_resize_1350_jpeg_quality_82'
+            : mode === 'aggressive'
+              ? 'bid_sheet_resize_1600_jpeg_quality_86'
+              : 'bid_sheet_crop_table_resize_1900_jpeg_quality_88',
+        sourceMimeType: file.mimetype,
+        outputMimeType: 'image/jpeg',
+        originalBytes,
+        optimizedBytes: outputBuffer.length,
+      },
+    };
+  }
+
+  private async prepareReceiptSpeedTestInput(
+    file: Express.Multer.File,
+    mode: ReceiptSpeedTestMode,
+  ): Promise<SignPdfSpeedTestInput> {
+    const originalBytes = file.size;
+    if (!file.mimetype.startsWith('image/')) {
+      return {
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        optimization: {
+          applied: false,
+          strategy: 'receipt_original_passthrough',
+          sourceMimeType: file.mimetype,
+          outputMimeType: file.mimetype,
+          originalBytes,
+          optimizedBytes: originalBytes,
+        },
+      };
+    }
+
+    if (mode === 'custom') {
+      return {
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        optimization: {
+          applied: false,
+          strategy: 'receipt_original_passthrough',
+          sourceMimeType: file.mimetype,
+          outputMimeType: file.mimetype,
+          originalBytes,
+          optimizedBytes: originalBytes,
+        },
+      };
+    }
+
+    const maxEdge =
+      mode === 'aggressive_plus' ? 1350 : mode === 'aggressive' ? 1600 : 1900;
+    const quality =
+      mode === 'aggressive_plus' ? 82 : mode === 'aggressive' ? 86 : 88;
+    const resizedBuffer = await sharp(file.buffer)
+      .resize({
+        width: maxEdge,
+        height: maxEdge,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality, mozjpeg: true })
+      .toBuffer();
+
+    let outputBuffer = resizedBuffer;
+    if (mode === 'crop_table') {
+      const metadata = await sharp(resizedBuffer).metadata();
+      const width = metadata.width ?? 0;
+      const height = metadata.height ?? 0;
+      if (width > 0 && height > 0) {
+        const left = Math.max(0, Math.floor(width * 0.06));
+        const top = Math.max(0, Math.floor(height * 0.22));
+        const roiWidth = Math.max(120, Math.floor(width * 0.88));
+        const roiHeight = Math.max(120, Math.floor(height * 0.44));
+        const safeWidth = Math.min(roiWidth, width - left);
+        const safeHeight = Math.min(roiHeight, height - top);
+
+        if (safeWidth > 100 && safeHeight > 100) {
+          outputBuffer = await sharp(resizedBuffer)
+            .extract({
+              left,
+              top,
+              width: safeWidth,
+              height: safeHeight,
+            })
+            .jpeg({ quality, mozjpeg: true })
+            .toBuffer();
+        }
+      }
+    }
+
+    return {
+      buffer: outputBuffer,
+      mimeType: 'image/jpeg',
+      optimization: {
+        applied: true,
+        strategy:
+          mode === 'aggressive_plus'
+            ? 'receipt_resize_1350_jpeg_quality_82'
+            : mode === 'aggressive'
+              ? 'receipt_resize_1600_jpeg_quality_86'
+            : 'receipt_crop_table_resize_1900_jpeg_quality_88',
+        sourceMimeType: file.mimetype,
+        outputMimeType: 'image/jpeg',
+        originalBytes,
+        optimizedBytes: outputBuffer.length,
+      },
+    };
+  }
+
+  private async preparePowerOfAttorneySpeedTestInput(
+    file: Express.Multer.File,
+    mode: SignPdfSpeedTestMode,
+  ): Promise<SignPdfSpeedTestInput> {
+    const originalBytes = file.size;
+    const maxEdge =
+      mode === 'aggressive_plus'
+        ? 1400
+        : mode === 'crop_top_plus'
+          ? 1500
+          : mode === 'aggressive'
+            ? 1700
+            : mode === 'crop_top'
+              ? 1850
+              : 2100;
+    const jpegQuality =
+      mode === 'crop_top_plus'
+        ? 86
+        : mode === 'aggressive_plus'
+          ? 88
+          : 90;
+
+    if (!file.mimetype.startsWith('image/')) {
+      return {
+        buffer: file.buffer,
+        mimeType: file.mimetype,
+        optimization: {
+          applied: false,
+          strategy: 'power_of_attorney_original_passthrough',
+          sourceMimeType: file.mimetype,
+          outputMimeType: file.mimetype,
+          originalBytes,
+          optimizedBytes: originalBytes,
+        },
+      };
+    }
+
+    const resizedBuffer = await sharp(file.buffer)
+      .resize({
+        width: maxEdge,
+        height: maxEdge,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality: jpegQuality, mozjpeg: true })
+      .toBuffer();
+
+    let outputBuffer = resizedBuffer;
+
+    if (mode === 'crop_top' || mode === 'crop_top_plus') {
+      const metadata = await sharp(resizedBuffer).metadata();
+      const width = metadata.width ?? 0;
+      const height = metadata.height ?? 0;
+      if (width > 0 && height > 0) {
+        const isCropTopPlus = mode === 'crop_top_plus';
+        const leftRatio = isCropTopPlus ? 0.07 : 0.05;
+        const widthRatio = isCropTopPlus ? 0.86 : 0.9;
+        const heightRatio = isCropTopPlus ? 0.62 : 0.72;
+        outputBuffer = await sharp(resizedBuffer)
+          .extract({
+            left: Math.floor(width * leftRatio),
+            top: 0,
+            width: Math.max(1, Math.min(width, Math.floor(width * widthRatio))),
+            height: Math.max(1, Math.min(height, Math.floor(height * heightRatio))),
+          })
+          .jpeg({ quality: jpegQuality, mozjpeg: true })
+          .toBuffer();
+      }
+    }
+
+    return {
+      buffer: outputBuffer,
+      mimeType: 'image/jpeg',
+      optimization: {
+        applied: true,
+        strategy:
+          mode === 'aggressive_plus'
+            ? 'power_of_attorney_resize_1400_jpeg_quality_88'
+            : mode === 'aggressive'
+              ? 'power_of_attorney_resize_1700_jpeg_quality_90'
+              : mode === 'crop_top_plus'
+                ? 'power_of_attorney_crop_top_resize_1500_jpeg_quality_86'
+              : mode === 'crop_top'
+                ? 'power_of_attorney_crop_top_resize_1850_jpeg_quality_90'
+                : 'power_of_attorney_resize_2100_jpeg_quality_90',
+        sourceMimeType: file.mimetype,
+        outputMimeType: 'image/jpeg',
+        originalBytes,
+        optimizedBytes: outputBuffer.length,
+      },
+    };
+  }
+
+  private async extractImageOcrFromPayload(
+    buffer: Buffer,
+    mimeType: string,
+    forceGeneric = false,
+  ): Promise<OcrDetailedResult> {
+    const startedAt = Date.now();
+    if (!mimeType.startsWith('image/')) {
+      return {
+        text: '',
+        lines: [],
+        formFields: [],
+        entities: [],
+        error: null,
+      };
+    }
+
+    const customProcessorId =
+      process.env.GOOGLE_CUSTOM_PROCESSOR_ID ||
+      process.env.GCP_CUSTOM_PROCESSOR_ID ||
+      '';
+
+    if (customProcessorId && !forceGeneric) {
+      const customResult =
+        await this.ocrEngineService.recognizeImageDetailedWithProcessor(
+          buffer,
+          mimeType,
+          customProcessorId,
+        );
+      this.logger.log(
+        `extractImageOcr completed in ${Date.now() - startedAt}ms using custom processor`,
+      );
+      return customResult;
+    }
+
+    const genericResult = await this.ocrEngineService.recognizeImageDetailed(
+      buffer,
+      mimeType,
+    );
+    this.logger.log(
+      `extractImageOcr completed in ${Date.now() - startedAt}ms using generic image OCR`,
+    );
+    return genericResult;
+  }
+
+  private async extractReceiptOcrFromPayload(
+    buffer: Buffer,
+    mimeType: string,
+    forceGeneric = false,
+  ): Promise<ReceiptSpeedTestOcrPayload> {
+    const startedAt = Date.now();
+    if (!mimeType.startsWith('image/')) {
+      return {
+        result: {
+          text: '',
+          lines: [],
+          formFields: [],
+          entities: [],
+          error: null,
+        },
+        previewBuffer: buffer,
+        previewMimeType: mimeType,
+        preprocessApplied: false,
+        preprocessAngle: null,
+        preprocessShear: null,
+        preprocessCropApplied: false,
+        selectedCandidate: 'direct',
+      };
+    }
+
+    const formProcessorId =
+      process.env.GOOGLE_FORM_PROCESSOR_ID ||
+      process.env.GCP_FORM_PROCESSOR_ID ||
+      '';
+
+    const useFormProcessor = Boolean(formProcessorId) && !forceGeneric;
+    const result = useFormProcessor
+      ? await this.ocrEngineService.recognizeImageDetailedWithProcessor(
+          buffer,
+          mimeType,
+          formProcessorId,
+        )
+      : await this.ocrEngineService.recognizeImageDetailed(buffer, mimeType);
+
+    this.logger.log(
+      `extractReceiptOcrFromPayload completed in ${Date.now() - startedAt}ms using ${useFormProcessor ? 'form processor' : 'generic image OCR'}`,
+    );
+
+    return {
+      result,
+      previewBuffer: buffer,
+      previewMimeType: mimeType,
+      preprocessApplied: false,
+      preprocessAngle: null,
+      preprocessShear: null,
+      preprocessCropApplied: false,
+      selectedCandidate: 'direct',
+    };
+  }
+
+  private async extractReceiptOcrWithPreprocess(
+    file: Express.Multer.File,
+  ): Promise<ReceiptSpeedTestOcrPayload> {
+    const startedAt = Date.now();
+    if (!file.mimetype.startsWith('image/')) {
+      return {
+        result: {
+          text: '',
+          lines: [],
+          formFields: [],
+          entities: [],
+          error: null,
+        },
+        previewBuffer: file.buffer,
+        previewMimeType: file.mimetype,
+        preprocessApplied: false,
+        preprocessAngle: null,
+        preprocessShear: null,
+        preprocessCropApplied: false,
+        selectedCandidate: 'direct',
+      };
+    }
+
+    const formProcessorId =
+      process.env.GOOGLE_FORM_PROCESSOR_ID ||
+      process.env.GCP_FORM_PROCESSOR_ID ||
+      '';
+    const runReceiptOcr = async (buffer: Buffer, mimeType: string) => {
+      if (formProcessorId) {
+        return this.ocrEngineService.recognizeImageDetailedWithProcessor(
+          buffer,
+          mimeType,
+          formProcessorId,
+        );
+      }
+      return this.ocrEngineService.recognizeImageDetailed(buffer, mimeType);
+    };
+
+    const preprocessed = await this.preprocessReceiptImage(file.buffer);
+    const ocrBuffer = preprocessed?.buffer ?? file.buffer;
+    const ocrMimeType = preprocessed ? 'image/png' : file.mimetype;
+    const roiBuffer = await this.extractReceiptTableRoi(ocrBuffer);
+    const candidates: Array<{
+      key: string;
+      buffer: Buffer;
+      mimeType: string;
+    }> = [{ key: 'fullBase', buffer: ocrBuffer, mimeType: ocrMimeType }];
+
+    if (roiBuffer) {
+      candidates.push({
+        key: 'roiBase',
+        buffer: roiBuffer,
+        mimeType: 'image/png',
+      });
+    }
+
+    let bestCandidate = candidates[0];
+    let bestResult: OcrDetailedResult | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (const candidate of candidates) {
+      const ocrResult = await runReceiptOcr(candidate.buffer, candidate.mimeType);
+      const score = this.scoreReceiptCandidate(ocrResult);
+      if (score > bestScore) {
+        bestScore = score;
+        bestResult = ocrResult;
+        bestCandidate = candidate;
+      }
+    }
+
+    this.logger.log(
+      `extractReceiptOcrWithPreprocess completed in ${Date.now() - startedAt}ms with preprocess`,
+    );
+
+    return {
+      result: bestResult ?? (await runReceiptOcr(ocrBuffer, ocrMimeType)),
+      previewBuffer: bestCandidate.buffer,
+      previewMimeType: bestCandidate.mimeType,
+      preprocessApplied: Boolean(preprocessed),
+      preprocessAngle: preprocessed?.angle ?? null,
+      preprocessShear: preprocessed?.shear ?? null,
+      preprocessCropApplied: preprocessed?.cropApplied ?? false,
+      selectedCandidate: bestCandidate.key,
+    };
+  }
+
+  private isPowerOfAttorneyFastResultSufficient(parsed: ParsedResult): boolean {
+    return Boolean(parsed.principalName.value) && Boolean(parsed.caseNumber.value);
+  }
+
+  private isReceiptFastResultSufficient(parsed: ParsedResult): boolean {
+    return Boolean(parsed.caseNumber.value) && Boolean(parsed.itemName.value);
+  }
+
+  private isBidSheetFastResultSufficient(parsed: ParsedResult): boolean {
+    return Boolean(parsed.caseNumber.value) && Boolean(parsed.itemName.value);
+  }
+
+  private toSignPdfSpeedTestMode(
+    rawMode: string | undefined,
+  ): SignPdfSpeedTestMode {
+    if (
+      rawMode === 'layout' ||
+      rawMode === 'aggressive' ||
+      rawMode === 'aggressive_plus' ||
+      rawMode === 'crop_top' ||
+      rawMode === 'crop_top_plus' ||
+      rawMode === 'fast_first'
+    ) {
+      return rawMode;
+    }
+    return 'custom';
+  }
+
+  private toReceiptSpeedTestMode(
+    rawMode: string | undefined,
+  ): ReceiptSpeedTestMode {
+    if (
+      rawMode === 'generic_receipt' ||
+      rawMode === 'aggressive' ||
+      rawMode === 'aggressive_plus' ||
+      rawMode === 'crop_table' ||
+      rawMode === 'preprocess' ||
+      rawMode === 'fast_first'
+    ) {
+      return rawMode;
+    }
+    return 'custom';
+  }
+
+  private toBidSheetSpeedTestMode(
+    rawMode: string | undefined,
+  ): BidSheetSpeedTestMode {
+    if (
+      rawMode === 'generic_bid_sheet' ||
+      rawMode === 'aggressive' ||
+      rawMode === 'aggressive_plus' ||
+      rawMode === 'crop_table' ||
+      rawMode === 'fast_first'
+    ) {
+      return rawMode;
+    }
+    return 'custom';
+  }
+
+  private isFastFirstResultSufficient(parsed: ParsedResult): boolean {
+    const hasPrincipalName = Boolean(parsed.principalName.value);
+    const hasPurposeCourtName = Boolean(parsed.purposeCourtName.value);
+    const hasCaseNumber = Boolean(parsed.caseNumber.value);
+    const hasSubmissionInstitution = Boolean(parsed.submissionInstitution.value);
+
+    return (
+      hasPrincipalName &&
+      hasPurposeCourtName &&
+      hasCaseNumber &&
+      hasSubmissionInstitution
+    );
+  }
+
+  private async extractImageOcr(
+    file: Express.Multer.File,
+  ): Promise<OcrDetailedResult> {
+    const startedAt = Date.now();
     if (!file.mimetype.startsWith('image/')) {
       return {
         text: '',
@@ -619,20 +2309,33 @@ export class VerificationService {
       '';
 
     if (customProcessorId) {
-      return this.ocrEngineService.recognizeImageDetailedWithProcessor(
-        file.buffer,
-        file.mimetype,
-        customProcessorId,
+      const customResult =
+        await this.ocrEngineService.recognizeImageDetailedWithProcessor(
+          file.buffer,
+          file.mimetype,
+          customProcessorId,
+        );
+      this.logger.log(
+        `extractImageOcr completed in ${Date.now() - startedAt}ms using custom processor`,
       );
+      return customResult;
     }
 
-    return this.ocrEngineService.recognizeImageDetailed(file.buffer, file.mimetype);
+    const genericResult = await this.ocrEngineService.recognizeImageDetailed(
+      file.buffer,
+      file.mimetype,
+    );
+    this.logger.log(
+      `extractImageOcr completed in ${Date.now() - startedAt}ms using generic image OCR`,
+    );
+    return genericResult;
   }
 
   private async extractReceiptOcr(
     file: Express.Multer.File,
     applyReceiptPreprocess: boolean,
   ): Promise<ReceiptOcrResult> {
+    const startedAt = Date.now();
     if (!file.mimetype.startsWith('image/')) {
       return {
         result: {
@@ -673,6 +2376,9 @@ export class VerificationService {
 
     if (!applyReceiptPreprocess) {
       const originalResult = await runReceiptOcr(file.buffer, file.mimetype);
+      this.logger.log(
+        `extractReceiptOcr completed in ${Date.now() - startedAt}ms without preprocess`,
+      );
       return {
         result: originalResult,
         preprocessedImageBase64: null,
@@ -683,25 +2389,25 @@ export class VerificationService {
       };
     }
 
-    const toneTunedFull = await this.toneTuneReceiptImage(ocrBuffer);
     const roiBuffer = await this.extractReceiptTableRoi(ocrBuffer);
-    const toneTunedRoi = roiBuffer ? await this.toneTuneReceiptImage(roiBuffer) : null;
-
     const candidates: Array<{ key: string; buffer: Buffer; mimeType: string }> = [
       { key: 'fullBase', buffer: ocrBuffer, mimeType: ocrMimeType },
-      { key: 'fullTone', buffer: toneTunedFull, mimeType: 'image/png' },
     ];
     if (roiBuffer) {
-      candidates.push({ key: 'roiBase', buffer: roiBuffer, mimeType: 'image/png' });
-    }
-    if (toneTunedRoi) {
-      candidates.push({ key: 'roiTone', buffer: toneTunedRoi, mimeType: 'image/png' });
+      candidates.push({
+        key: 'roiBase',
+        buffer: roiBuffer,
+        mimeType: 'image/png',
+      });
     }
 
     let bestResult: OcrDetailedResult | null = null;
     let bestScore = Number.NEGATIVE_INFINITY;
     for (const candidate of candidates) {
-      const ocrResult = await runReceiptOcr(candidate.buffer, candidate.mimeType);
+      const ocrResult = await runReceiptOcr(
+        candidate.buffer,
+        candidate.mimeType,
+      );
       const score = this.scoreReceiptCandidate(ocrResult);
       if (score > bestScore) {
         bestScore = score;
@@ -709,13 +2415,16 @@ export class VerificationService {
       }
     }
 
-    const result =
-      bestResult ??
-      (await runReceiptOcr(ocrBuffer, ocrMimeType));
+    const result = bestResult ?? (await runReceiptOcr(ocrBuffer, ocrMimeType));
+    this.logger.log(
+      `extractReceiptOcr completed in ${Date.now() - startedAt}ms with preprocess`,
+    );
 
     return {
       result,
-      preprocessedImageBase64: preprocessed ? ocrBuffer.toString('base64') : null,
+      preprocessedImageBase64: preprocessed
+        ? ocrBuffer.toString('base64')
+        : null,
       preprocessedImageMimeType: preprocessed ? ocrMimeType : null,
       preprocessAngle: preprocessed?.angle ?? null,
       preprocessShear: preprocessed?.shear ?? null,
@@ -763,9 +2472,12 @@ export class VerificationService {
       .toBuffer();
   }
 
-  private async preprocessReceiptImage(
-    buffer: Buffer,
-  ): Promise<{ buffer: Buffer; angle: number; shear: number; cropApplied: boolean } | null> {
+  private async preprocessReceiptImage(buffer: Buffer): Promise<{
+    buffer: Buffer;
+    angle: number;
+    shear: number;
+    cropApplied: boolean;
+  } | null> {
     try {
       const oriented = await sharp(buffer)
         .rotate()
@@ -847,7 +2559,7 @@ export class VerificationService {
     const minRowDark = Math.max(8, Math.floor(width * 0.012));
     const minColDark = Math.max(8, Math.floor(height * 0.012));
 
-    let top = rowDarkCounts.findIndex((count) => count >= minRowDark);
+    const top = rowDarkCounts.findIndex((count) => count >= minRowDark);
     let bottom = height - 1;
     for (let y = height - 1; y >= 0; y -= 1) {
       if (rowDarkCounts[y] >= minRowDark) {
@@ -856,7 +2568,7 @@ export class VerificationService {
       }
     }
 
-    let left = colDarkCounts.findIndex((count) => count >= minColDark);
+    const left = colDarkCounts.findIndex((count) => count >= minColDark);
     let right = width - 1;
     for (let x = width - 1; x >= 0; x -= 1) {
       if (colDarkCounts[x] >= minColDark) {
@@ -907,14 +2619,31 @@ export class VerificationService {
 
     const raw = await gray.raw().toBuffer();
     const bandHeight = Math.max(8, Math.floor(height * 0.1));
-    const topBand = { start: Math.floor(height * 0.15), end: Math.floor(height * 0.15) + bandHeight };
+    const topBand = {
+      start: Math.floor(height * 0.15),
+      end: Math.floor(height * 0.15) + bandHeight,
+    };
     const bottomBand = {
       start: Math.floor(height * 0.75),
       end: Math.floor(height * 0.75) + bandHeight,
     };
 
-    const topLeft = this.estimateEdgeX(raw, width, height, topBand.start, topBand.end, true);
-    const topRight = this.estimateEdgeX(raw, width, height, topBand.start, topBand.end, false);
+    const topLeft = this.estimateEdgeX(
+      raw,
+      width,
+      height,
+      topBand.start,
+      topBand.end,
+      true,
+    );
+    const topRight = this.estimateEdgeX(
+      raw,
+      width,
+      height,
+      topBand.start,
+      topBand.end,
+      false,
+    );
     const bottomLeft = this.estimateEdgeX(
       raw,
       width,
@@ -1099,7 +2828,6 @@ export class VerificationService {
     settings: VerificationSettings,
   ): ParsedResult {
     const reviewThreshold = settings.reviewThreshold;
-    console.log('전본서 ocr 값 :', ocr);
     const principalNameCandidate =
       this.findByEntityExactType(ocr.entities, 'principalName') ??
       this.findByLayoutLines(
@@ -1110,22 +2838,28 @@ export class VerificationService {
         ],
         'principalName',
       ) ??
-      this.findByEntity(ocr.entities, settings.fields.principalName.entityKeywords) ??
-      this.findByFormField(ocr.formFields, settings.fields.principalName.formFieldLabels) ??
-      this.findByTextFallback(ocr.text, settings.fields.principalName.textFallbackLabel);
+      this.findByEntity(
+        ocr.entities,
+        settings.fields.principalName.entityKeywords,
+      ) ??
+      this.findByFormField(
+        ocr.formFields,
+        settings.fields.principalName.formFieldLabels,
+      ) ??
+      this.findByTextFallback(
+        ocr.text,
+        settings.fields.principalName.textFallbackLabel,
+      );
 
     const purposeTextCandidate =
       this.findByEntityExactType(ocr.entities, 'purposeText') ??
       this.findPurposeTextCandidate(ocr);
-    const purposeCourtNameCandidate = this.extractPurposeCourtNameCandidate(
-      purposeTextCandidate,
-    );
-    const caseNumberCandidate = this.extractPurposeCaseNumberCandidate(
-      purposeTextCandidate,
-    );
-    const itemNameCandidate = this.extractPurposeItemNameCandidate(
-      purposeTextCandidate,
-    );
+    const purposeCourtNameCandidate =
+      this.extractPurposeCourtNameCandidate(purposeTextCandidate);
+    const caseNumberCandidate =
+      this.extractPurposeCaseNumberCandidate(purposeTextCandidate);
+    const itemNameCandidate =
+      this.extractPurposeItemNameCandidate(purposeTextCandidate);
 
     const submissionInstitutionCandidate =
       this.findByEntityExactType(ocr.entities, 'submissionInstitution') ??
@@ -1173,10 +2907,11 @@ export class VerificationService {
         settings.fields.agentName.textFallbackLabel,
       );
 
- 
-
     return {
-      principalName: this.toParsedField(principalNameCandidate, reviewThreshold),
+      principalName: this.toParsedField(
+        principalNameCandidate,
+        reviewThreshold,
+      ),
       purposeCourtName: this.toParsedField(
         purposeCourtNameCandidate,
         reviewThreshold,
@@ -1194,7 +2929,9 @@ export class VerificationService {
     };
   }
 
-  private findPurposeTextCandidate(ocr: OcrDetailedResult): ParsedCandidate | null {
+  private findPurposeTextCandidate(
+    ocr: OcrDetailedResult,
+  ): ParsedCandidate | null {
     return (
       this.findByFormField(ocr.formFields, ['용도', '사용용도', '목적']) ??
       this.findByEntity(ocr.entities, ['purpose', 'usage', '용도']) ??
@@ -1205,7 +2942,9 @@ export class VerificationService {
   private extractPurposeCourtNameCandidate(
     purposeTextCandidate: ParsedCandidate | null,
   ): ParsedCandidate | null {
-    const parsed = this.parsePurposeTextParts(purposeTextCandidate?.value ?? null);
+    const parsed = this.parsePurposeTextParts(
+      purposeTextCandidate?.value ?? null,
+    );
     if (!parsed.courtName || !purposeTextCandidate) {
       return null;
     }
@@ -1218,7 +2957,9 @@ export class VerificationService {
   private extractPurposeCaseNumberCandidate(
     purposeTextCandidate: ParsedCandidate | null,
   ): ParsedCandidate | null {
-    const parsed = this.parsePurposeTextParts(purposeTextCandidate?.value ?? null);
+    const parsed = this.parsePurposeTextParts(
+      purposeTextCandidate?.value ?? null,
+    );
     if (!parsed.caseNumber || !purposeTextCandidate) {
       return null;
     }
@@ -1231,7 +2972,9 @@ export class VerificationService {
   private extractPurposeItemNameCandidate(
     purposeTextCandidate: ParsedCandidate | null,
   ): ParsedCandidate | null {
-    const parsed = this.parsePurposeTextParts(purposeTextCandidate?.value ?? null);
+    const parsed = this.parsePurposeTextParts(
+      purposeTextCandidate?.value ?? null,
+    );
     if (!parsed.itemName || !purposeTextCandidate) {
       return null;
     }
@@ -1317,7 +3060,10 @@ export class VerificationService {
     );
   }
 
-  private logReceiptConfidenceDebug(ocr: OcrDetailedResult, parsed: ParsedResult) {
+  private logReceiptConfidenceDebug(
+    ocr: OcrDetailedResult,
+    parsed: ParsedResult,
+  ) {
     const formFields = ocr.formFields.map((field) => ({
       name: field.name,
       value: field.value,
@@ -1329,38 +3075,26 @@ export class VerificationService {
       confidence: entity.confidence,
     }));
 
-    const caseFromFormField = this.findByFormField(ocr.formFields, ['사건번호', '사건 번호']);
-    const itemFromFormField = this.findByFormField(ocr.formFields, ['물건번호', '물건 번호']);
-    const caseFromEntity = this.findByEntity(ocr.entities, ['caseNumber', 'case_number', '사건번호']);
-    const itemFromEntity = this.findByEntity(ocr.entities, ['itemNumber', 'item_number', '물건번호']);
+    const caseFromFormField = this.findByFormField(ocr.formFields, [
+      '사건번호',
+      '사건 번호',
+    ]);
+    const itemFromFormField = this.findByFormField(ocr.formFields, [
+      '물건번호',
+      '물건 번호',
+    ]);
+    const caseFromEntity = this.findByEntity(ocr.entities, [
+      'caseNumber',
+      'case_number',
+      '사건번호',
+    ]);
+    const itemFromEntity = this.findByEntity(ocr.entities, [
+      'itemNumber',
+      'item_number',
+      '물건번호',
+    ]);
 
-    console.log('[Receipt confidence debug]', {
-      source: 'Document AI processDocument response',
-      selectedForParsed: {
-        caseNumber: {
-          value: parsed.caseNumber.value,
-          confidence: parsed.caseNumber.confidence,
-          needsReview: parsed.caseNumber.needsReview,
-        },
-        itemNumber: {
-          value: parsed.itemName.value,
-          confidence: parsed.itemName.confidence,
-          needsReview: parsed.itemName.needsReview,
-        },
-      },
-      candidates: {
-        caseNumber: {
-          fromFormField: caseFromFormField,
-          fromEntity: caseFromEntity,
-        },
-        itemNumber: {
-          fromFormField: itemFromFormField,
-          fromEntity: itemFromEntity,
-        },
-      },
-      formFields,
-      entities,
-    });
+  
   }
 
   private findByFormField(
@@ -1369,7 +3103,9 @@ export class VerificationService {
   ): { value: string; confidence: number | null } | null {
     for (const field of fields) {
       const name = this.normalize(field.name);
-      const matched = labels.some((label) => name.includes(this.normalize(label)));
+      const matched = labels.some((label) =>
+        name.includes(this.normalize(label)),
+      );
       if (!matched) {
         continue;
       }
@@ -1392,7 +3128,9 @@ export class VerificationService {
   ): { value: string; confidence: number | null } | null {
     for (const entity of entities) {
       const type = this.normalize(entity.type);
-      const matched = types.some((keyword) => type.includes(this.normalize(keyword)));
+      const matched = types.some((keyword) =>
+        type.includes(this.normalize(keyword)),
+      );
       if (!matched) {
         continue;
       }
@@ -1463,7 +3201,8 @@ export class VerificationService {
       const fallbackLabelLines = orderedLines.filter((line) =>
         this.normalize(line.text).includes(normalizedLabel),
       );
-      const labelLines = exactLabelLines.length > 0 ? exactLabelLines : fallbackLabelLines;
+      const labelLines =
+        exactLabelLines.length > 0 ? exactLabelLines : fallbackLabelLines;
 
       for (const labelLine of labelLines) {
         const normalizedLine = this.normalize(labelLine.text);
@@ -1471,7 +3210,10 @@ export class VerificationService {
           continue;
         }
 
-        const inline = this.extractInlineValueFromLabelLine(labelLine.text, label);
+        const inline = this.extractInlineValueFromLabelLine(
+          labelLine.text,
+          label,
+        );
         const inlineProcessed = this.postProcessLayoutValue(fieldKey, inline);
         if (inlineProcessed) {
           return { value: inlineProcessed, confidence: null };
@@ -1482,8 +3224,14 @@ export class VerificationService {
           labelLine,
           normalizedCoords,
         );
-        const rightProcessed = this.postProcessLayoutValue(fieldKey, right?.text ?? null);
-        if (rightProcessed && (right?.score ?? Number.POSITIVE_INFINITY) < bestScore) {
+        const rightProcessed = this.postProcessLayoutValue(
+          fieldKey,
+          right?.text ?? null,
+        );
+        if (
+          rightProcessed &&
+          (right?.score ?? Number.POSITIVE_INFINITY) < bestScore
+        ) {
           bestValue = rightProcessed;
           bestScore = right!.score;
         }
@@ -1493,8 +3241,14 @@ export class VerificationService {
           labelLine,
           normalizedCoords,
         );
-        const belowProcessed = this.postProcessLayoutValue(fieldKey, below?.text ?? null);
-        if (belowProcessed && (below?.score ?? Number.POSITIVE_INFINITY) < bestScore) {
+        const belowProcessed = this.postProcessLayoutValue(
+          fieldKey,
+          below?.text ?? null,
+        );
+        if (
+          belowProcessed &&
+          (below?.score ?? Number.POSITIVE_INFINITY) < bestScore
+        ) {
           bestValue = belowProcessed;
           bestScore = below!.score;
         }
@@ -1504,7 +3258,10 @@ export class VerificationService {
     return bestValue ? { value: bestValue, confidence: null } : null;
   }
 
-  private extractInlineValueFromLabelLine(lineText: string, label: string): string | null {
+  private extractInlineValueFromLabelLine(
+    lineText: string,
+    label: string,
+  ): string | null {
     const cleanedLine = this.cleanValue(lineText);
     if (!cleanedLine) {
       return null;
@@ -1626,14 +3383,16 @@ export class VerificationService {
       if (paren?.[1]) {
         return this.cleanValue(paren[1]);
       }
-      const hasItemHint = /(물건명|물건번호|물건 번호|호실|호|동|아파트|오피스텔|토지)/.test(
-        withoutCheckbox,
-      );
+      const hasItemHint =
+        /(물건명|물건번호|물건 번호|호실|호|동|아파트|오피스텔|토지)/.test(
+          withoutCheckbox,
+        );
       return hasItemHint ? this.cleanValue(withoutCheckbox) : null;
     }
 
     if (fieldKey === 'submissionInstitution') {
-      const hasInstitutionHint = /(법원|기관|청|은행|학교|센터|공사|공단|세무서|경찰서)/.test(cleaned);
+      const hasInstitutionHint =
+        /(법원|기관|청|은행|학교|센터|공사|공단|세무서|경찰서)/.test(cleaned);
       return hasInstitutionHint ? cleaned : null;
     }
 
@@ -1689,7 +3448,12 @@ export class VerificationService {
       return false;
     }
     const maxCoord = Math.max(
-      ...lines.flatMap((line) => [line.left, line.top, line.right, line.bottom]),
+      ...lines.flatMap((line) => [
+        line.left,
+        line.top,
+        line.right,
+        line.bottom,
+      ]),
     );
     return maxCoord <= 2;
   }
@@ -1743,9 +3507,7 @@ export class VerificationService {
       }
 
       const inline = this.cleanValue(
-        line
-          .replace(label, '')
-          .replace(/^[:：\-\s]+/, ''),
+        line.replace(label, '').replace(/^[:：\-\s]+/, ''),
       );
       if (inline) {
         return { value: inline, confidence: null };

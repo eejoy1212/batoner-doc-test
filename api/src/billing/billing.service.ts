@@ -34,7 +34,10 @@ export class BillingService {
 
     try {
       const raw = await fs.readFile(this.dataPath, 'utf8');
-      const parsed = this.normalize(JSON.parse(raw) as unknown, DEFAULT_SUBSCRIPTION);
+      const parsed = this.normalize(
+        JSON.parse(raw) as unknown,
+        DEFAULT_SUBSCRIPTION,
+      );
       this.cache = parsed;
       return parsed;
     } catch {
@@ -54,10 +57,17 @@ export class BillingService {
 
   private async persist(data: SubscriptionInfo) {
     await fs.mkdir(dirname(this.dataPath), { recursive: true });
-    await fs.writeFile(this.dataPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+    await fs.writeFile(
+      this.dataPath,
+      `${JSON.stringify(data, null, 2)}\n`,
+      'utf8',
+    );
   }
 
-  private normalize(input: unknown, fallback: SubscriptionInfo): SubscriptionInfo {
+  private normalize(
+    input: unknown,
+    fallback: SubscriptionInfo,
+  ): SubscriptionInfo {
     const value =
       typeof input === 'object' && input !== null && !Array.isArray(input)
         ? (input as Record<string, unknown>)
@@ -68,7 +78,10 @@ export class BillingService {
       planName: this.toString(value.planName, fallback.planName),
       status: this.toStatus(value.status, fallback.status),
       seats: this.toSeats(value.seats, fallback.seats),
-      nextBillingDate: this.toDateString(value.nextBillingDate, fallback.nextBillingDate),
+      nextBillingDate: this.toDateString(
+        value.nextBillingDate,
+        fallback.nextBillingDate,
+      ),
       autoRenew: this.toBoolean(value.autoRenew, fallback.autoRenew),
       cancelAtPeriodEnd: this.toBoolean(
         value.cancelAtPeriodEnd,

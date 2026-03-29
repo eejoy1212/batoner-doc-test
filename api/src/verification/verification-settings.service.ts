@@ -113,7 +113,10 @@ export class VerificationSettingsService {
     const fieldsInput = this.toRecord(input.fields);
 
     return {
-      reviewThreshold: this.normalizeThreshold(input.reviewThreshold, base.reviewThreshold),
+      reviewThreshold: this.normalizeThreshold(
+        input.reviewThreshold,
+        base.reviewThreshold,
+      ),
       fields: {
         principalName: this.mergeField(
           base.fields.principalName,
@@ -123,7 +126,10 @@ export class VerificationSettingsService {
           base.fields.purposeCourtName,
           fieldsInput.purposeCourtName,
         ),
-        caseNumber: this.mergeField(base.fields.caseNumber, fieldsInput.caseNumber),
+        caseNumber: this.mergeField(
+          base.fields.caseNumber,
+          fieldsInput.caseNumber,
+        ),
         itemName: this.mergeField(base.fields.itemName, fieldsInput.itemName),
         submissionInstitution: this.mergeField(
           base.fields.submissionInstitution,
@@ -143,8 +149,14 @@ export class VerificationSettingsService {
   ): VerificationFieldSettings {
     const input = this.toRecord(rawInput);
     return {
-      entityKeywords: this.normalizeStringList(input.entityKeywords, base.entityKeywords),
-      formFieldLabels: this.normalizeStringList(input.formFieldLabels, base.formFieldLabels),
+      entityKeywords: this.normalizeStringList(
+        input.entityKeywords,
+        base.entityKeywords,
+      ),
+      formFieldLabels: this.normalizeStringList(
+        input.formFieldLabels,
+        base.formFieldLabels,
+      ),
       textFallbackLabel: this.normalizeString(
         input.textFallbackLabel,
         base.textFallbackLabel,

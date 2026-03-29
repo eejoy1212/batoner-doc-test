@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DocumentProcessorServiceClient, protos } from '@google-cloud/documentai';
+import {
+  DocumentProcessorServiceClient,
+  protos,
+} from '@google-cloud/documentai';
 
 export type OcrLine = {
   text: string;
@@ -208,6 +211,7 @@ export class OcrEngineService {
       processorId?: string;
     },
   ): Promise<OcrDetailedResult> {
+    const startedAt = Date.now();
     const processorName = this.getProcessorName(
       options.useLayoutParser,
       options.processorId,
@@ -229,6 +233,9 @@ export class OcrEngineService {
     };
 
     const [result] = await this.client.processDocument(request);
+    this.logger.log(
+      `processDocument completed in ${Date.now() - startedAt}ms (${mimeType}, ${processorName})`,
+    );
     const document = result.document;
     this.logRawDocumentAiResult(processorName, document);
     if (!document) {
@@ -284,8 +291,10 @@ export class OcrEngineService {
     useLayoutParser: boolean,
     explicitProcessorId?: string,
   ): string {
-    const projectId = process.env.GCP_PROJECT_ID || process.env.GOOGLE_PROJECT_ID;
-    const location = process.env.GCP_LOCATION || process.env.GOOGLE_LOCATION || 'us';
+    const projectId =
+      process.env.GCP_PROJECT_ID || process.env.GOOGLE_PROJECT_ID;
+    const location =
+      process.env.GCP_LOCATION || process.env.GOOGLE_LOCATION || 'us';
     const layoutParserProcessorId =
       process.env.GCP_LAYOUT_PARSER_PROCESSOR_ID ||
       process.env.GOOGLE_LAYOUT_PARSER_PROCESSOR_ID;
@@ -329,12 +338,12 @@ export class OcrEngineService {
         .trim()
         .toLowerCase() === 'true';
 
-    // if (shouldLogRaw) {
+    if (shouldLogRaw) {
       console.log(
         '[DocumentAI raw document]',
         JSON.stringify(document ?? null, null, 2),
       );
-    // }
+    }
   }
 
   private extractLinesFromDocument(
@@ -396,7 +405,9 @@ export class OcrEngineService {
       }
     }
 
-    return lines.sort((a, b) => (a.top === b.top ? a.left - b.left : a.top - b.top));
+    return lines.sort((a, b) =>
+      a.top === b.top ? a.left - b.left : a.top - b.top,
+    );
   }
 
   private extractLinesFromLayoutBlocks(
@@ -497,13 +508,19 @@ export class OcrEngineService {
     for (const page of pages) {
       const formFields = page.formFields ?? [];
       for (const formField of formFields) {
-        const name = this.getTextByLayout(fullText, formField.fieldName).replace(/\s+/g, ' ').trim();
-        const value = this.getTextByLayout(fullText, formField.fieldValue).replace(/\s+/g, ' ').trim();
+        const name = this.getTextByLayout(fullText, formField.fieldName)
+          .replace(/\s+/g, ' ')
+          .trim();
+        const value = this.getTextByLayout(fullText, formField.fieldValue)
+          .replace(/\s+/g, ' ')
+          .trim();
         if (!name && !value) {
           continue;
         }
         const rawConfidence = Number(
-          formField.fieldValue?.confidence ?? formField.fieldName?.confidence ?? NaN,
+          formField.fieldValue?.confidence ??
+            formField.fieldName?.confidence ??
+            NaN,
         );
         fields.push({
           name,
@@ -527,7 +544,11 @@ export class OcrEngineService {
         const pageInfo = pages[pageIndex];
         const pageWidth = Number(pageInfo?.dimension?.width ?? 0);
         const pageHeight = Number(pageInfo?.dimension?.height ?? 0);
-        const box = this.getPixelBox(pageRef?.boundingPoly, pageWidth, pageHeight);
+        const box = this.getPixelBox(
+          pageRef?.boundingPoly,
+          pageWidth,
+          pageHeight,
+        );
 
         return {
           type: entity.type ?? '',
@@ -541,7 +562,9 @@ export class OcrEngineService {
           bottom: box?.bottom,
         };
       })
-      .filter((entity) => entity.type.length > 0 || entity.mentionText.length > 0);
+      .filter(
+        (entity) => entity.type.length > 0 || entity.mentionText.length > 0,
+      );
   }
 
   private extractTextFromDocument(
@@ -572,9 +595,7 @@ export class OcrEngineService {
 
   private getTextByLayout(
     fullText: string,
-    layout?:
-      | protos.google.cloud.documentai.v1.Document.Page.ILayout
-      | null,
+    layout?: protos.google.cloud.documentai.v1.Document.Page.ILayout | null,
   ): string {
     return this.getTextByTextAnchor(fullText, layout?.textAnchor);
   }
@@ -601,7 +622,14 @@ export class OcrEngineService {
     poly: protos.google.cloud.documentai.v1.IBoundingPoly | null | undefined,
     pageWidth: number,
     pageHeight: number,
-  ): { left: number; top: number; width: number; height: number; right: number; bottom: number } | null {
+  ): {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    right: number;
+    bottom: number;
+  } | null {
     const normalized = poly?.normalizedVertices ?? [];
     if (normalized.length > 0) {
       const usePageDimensions = pageWidth > 0 && pageHeight > 0;

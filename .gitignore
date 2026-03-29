@@ -1,0 +1,7 @@
+api/gcp-key.json
+api/.env
+api/.env.local
+api/.env.dev
+web/.env
+web/.env.local
+web/.env.development
